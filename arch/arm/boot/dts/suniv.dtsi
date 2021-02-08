@@ -227,8 +227,7 @@
 				function = "spi1";
 			};
 
-			/*
-			lcd_rgb666_pins: lcd-rgb666-pins {
+			lcd_rgb666_pins: lcd-rgb666 {
 				pins = "PD0", "PD1", "PD2", "PD3", "PD4",
 				       "PD5", "PD6", "PD7", "PD8", "PD9",
 				       "PD10", "PD11", "PD12", "PD13", "PD14",
@@ -236,7 +235,6 @@
 				       "PD20", "PD21";
 				function = "lcd";
 			};
-			*/
 
 			uart0_pins: uart0 {
 				pins = "PE0", "PE1";		/* RX, TX */
