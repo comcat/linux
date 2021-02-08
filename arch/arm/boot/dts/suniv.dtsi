@@ -215,11 +215,19 @@
 			#interrupt-cells = <3>;
 			#gpio-cells = <3>;
 
-			spi0_pins_a: spi0-pins-pc {
+			spi0_pins: spi0 {
+				/* CLK, CS, MISO, MOSI */
 				pins = "PC0", "PC1", "PC2", "PC3";
 				function = "spi0";
 			};
 
+			spi1_pins: spi1 {
+				/* CLK, CS, MISO, MOSI */
+				pins = "PA0", "PA1", "PA2", "PA3";
+				function = "spi1";
+			};
+
+			/*
 			lcd_rgb666_pins: lcd-rgb666-pins {
 				pins = "PD0", "PD1", "PD2", "PD3", "PD4",
 				       "PD5", "PD6", "PD7", "PD8", "PD9",
@@ -228,10 +236,26 @@
 				       "PD20", "PD21";
 				function = "lcd";
 			};
+			*/
 
-			uart0_pins_a: uart-pins-pe {
-				pins = "PE0", "PE1";
+			uart0_pins: uart0 {
+				pins = "PE0", "PE1";		/* RX, TX */
 				function = "uart0";
+			};
+
+			uart1_pins: uart1 {
+				pins = "PD3", "PD4";
+				function = "uart1";
+			};
+
+			uart2_pins: uart2 {
+				pins = "PD14", "PD13";
+				function = "uart2";
+			};
+
+			i2c0_pins: i2c0 {
+				pins = "PE11", "PE12";
+				function = "i2c0";
 			};
 
 			mmc0_pins: mmc0-pins {
