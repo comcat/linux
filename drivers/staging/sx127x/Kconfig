@@ -1,0 +1,8 @@
+config SX127X
+	tristate "SPI SX127X Device Support"
+	depends on SPI
+	help
+	  This enables support for accessing SX127x devices.
+	  If you have SX127X chip say yes.
+
+	  If unsure, say no here.
