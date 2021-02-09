@@ -106,7 +106,13 @@
 #define SX127X_REG_LORA_MODEMCONFIG2									SX127X_LORAREG(0x1e)
 #define SX127X_REG_LORA_MODEMCONFIG2_SPREADINGFACTOR					(BIT(7) | BIT(6) | BIT(5) | BIT(4))
 #define SX127X_REG_LORA_MODEMCONFIG2_SPREADINGFACTOR_SHIFT				4
-#define SX127X_REG_LORA_MODEMCONFIG2_RXPAYLOADCRCON						BIT(2)
+
+/*
+ * sx1272 crc bit is BIT(1), shift is 1
+ * This is sx1276/8 crc bit
+ */
+#define SX127X_REG_LORA_MODEMCONFIG2_CRCON								BIT(2)
+#define SX127X_REG_LORA_MODEMCONFIG2_CRCON_SHIFT						2
 
 #define SX127X_REG_FSKOOK_PREAMBLEDETECT								SX127X_FSKOOKREG(0x1f)
 #define SX127X_REG_LORA_SYMBTIMEOUTLSB									SX127X_LORAREG(0x1f)
@@ -603,9 +609,9 @@ static int sx127x_set_crc(struct sx127x *data, bool crc)
 	dev_warn(data->chardevice, "Setting crc to %d\n", crc);
 	sx127x_reg_read(data->spidevice, SX127X_REG_LORA_MODEMCONFIG2, &reg);
 	if (crc)
-		reg |= SX127X_REG_LORA_MODEMCONFIG2_RXPAYLOADCRCON;
+		reg |= SX127X_REG_LORA_MODEMCONFIG2_CRCON;
 	else
-		reg &= ~SX127X_REG_LORA_MODEMCONFIG2_RXPAYLOADCRCON;
+		reg &= ~SX127X_REG_LORA_MODEMCONFIG2_CRCON;
 	sx127x_reg_write(data->spidevice, SX127X_REG_LORA_MODEMCONFIG2, reg);
 	return 0;
 }
@@ -620,11 +626,13 @@ static ssize_t sx127x_crc_show(struct device *dev, struct device_attribute *attr
 	mutex_lock(&data->mutex);
 	sx127x_reg_read(data->spidevice, SX127X_REG_LORA_MODEMCONFIG2, &config2);
 
-	crc = (config2 & SX127X_REG_LORA_MODEMCONFIG2_RXPAYLOADCRCON) >> 1;
+	crc = config2 >> SX127X_REG_LORA_MODEMCONFIG2_CRCON_SHIFT;
+
+	dev_warn(dev, "cfg2: 0x%02X\n", config2);
 
 	mutex_unlock(&data->mutex);
 
-	return sprintf(buf, "%d\n", crc);
+	return sprintf(buf, "%d\n", crc & 0x1);
 }
 
 static ssize_t sx127x_crc_store(struct device *dev,
