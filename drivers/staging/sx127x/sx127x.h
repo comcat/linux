@@ -3,6 +3,24 @@
 
 #include <linux/types.h>
 
+#define	 BW_125		0x00
+#define	 BW_250		0x01
+#define	 BW_500		0x02
+
+#define	 CR_5		0x01
+#define	 CR_6		0x02
+#define	 CR_7		0x03
+#define	 CR_8		0x04
+
+#define	 SF_6		0x06
+#define	 SF_7		0x07
+#define	 SF_10		0x0A
+#define	 SF_11		0x0B
+#define	 SF_12		0x0C
+
+#define	 CRC_ON		0x01
+#define	 CRC_OFF	0x00
+
 enum sx127x_ioctl_cmd {
 	SX127X_IOCTL_CMD_GET_MODULATION,
 	SX127X_IOCTL_CMD_SET_MODULATION,
@@ -24,6 +42,8 @@ enum sx127x_ioctl_cmd {
 	SX127X_IOCTL_CMD_SET_CRC,
 	SX127X_IOCTL_CMD_GET_INVERTIQ,
 	SX127X_IOCTL_CMD_SET_INVERTIQ,
+	SX127X_IOCTL_CMD_GET_CR,
+	SX127X_IOCTL_CMD_SET_CR,
 };
 
 enum sx127x_modulation {

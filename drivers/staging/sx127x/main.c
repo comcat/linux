@@ -787,6 +787,23 @@ static ssize_t sx127x_bw_show(struct device *dev, struct device_attribute *attr,
 	return ret;
 }
 
+static int sx127x_set_bw(struct sx127x *data, unsigned bw){
+	u8 r;
+	dev_info(data->chardevice, "setting BW to %u\n", bw);
+
+	// set the BW
+	#if 1
+	sx127x_reg_read(data->spidevice, SX127X_REG_LORA_MODEMCONFIG1, &r);
+	r &= ~SX127X_REG_LORA_MODEMCONFIG1_BW;
+	r |= bw << SX127X_REG_LORA_MODEMCONFIG1_BW_SHIFT;
+	#else
+	r = (BW_500 << 4) | (CR_6 << 1);
+	#endif
+	sx127x_reg_write(data->spidevice, SX127X_REG_LORA_MODEMCONFIG1, r);
+
+	return 0;
+}
+
 static ssize_t sx127x_bw_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
@@ -826,6 +843,19 @@ static ssize_t sx127x_cr_show(struct device *dev,
 	mutex_unlock(&data->mutex);
 
 	return ret;
+}
+
+static int sx127x_set_cr(struct sx127x *data, unsigned cr){
+	u8 r;
+	dev_info(data->chardevice, "setting CR to %u\n", cr);
+
+	sx127x_reg_read(data->spidevice, SX127X_REG_LORA_MODEMCONFIG1, &r);
+	r &= ~SX127X_REG_LORA_MODEMCONFIG1_CR;
+	r |= cr << SX127X_REG_LORA_MODEMCONFIG1_CR_SHIFT;
+
+	sx127x_reg_write(data->spidevice, SX127X_REG_LORA_MODEMCONFIG1, r);
+
+	return 0;
 }
 
 static ssize_t sx127x_cr_store(struct device *dev,
@@ -940,13 +970,12 @@ static ssize_t sx127x_power_show(struct device *dev,
 	sx127x_reg_read(data->spidevice, SX127X_REG_PACONFIG, &paconfig);
 
 	if (!(paconfig & SX127X_REG_PACONFIG_PASELECT)) {
-		maxpower =
-		    ((paconfig & SX127X_REG_PACONFIG_MAXPOWER) >>
-		     SX127X_REG_PACONFIG_MAXPOWER_SHIFT);
+
+		maxpower = ((paconfig & SX127X_REG_PACONFIG_MAXPOWER) >>
+					 SX127X_REG_PACONFIG_MAXPOWER_SHIFT);
 	}
 
-	power = maxpower - (15 -
-			      (paconfig & SX127X_REG_PACONFIG_POWER));
+	power = maxpower - (15 - (paconfig & SX127X_REG_PACONFIG_POWER));
 	mutex_unlock(&data->mutex);
 
 	return sprintf(buf, "%d\n", power);
@@ -966,7 +995,7 @@ static ssize_t sx127x_power_store(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(power, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+static DEVICE_ATTR(dbm, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 				   sx127x_power_show, sx127x_power_store);
 
 static int sx127x_dev_open(struct inode *inode, struct file *file)
@@ -1090,6 +1119,12 @@ static long sx127x_dev_ioctl(struct file *filp, unsigned int cmd,
 			break;
 		case SX127X_IOCTL_CMD_GET_SF:
 			ret = 0;
+			break;
+		case SX127X_IOCTL_CMD_SET_BW:
+			ret = sx127x_set_bw(data, arg);
+			break;
+		case SX127X_IOCTL_CMD_SET_CR:
+			ret = sx127x_set_cr(data, arg);
 			break;
 		case SX127X_IOCTL_CMD_SET_OPMODE:
 			ret = sx127x_set_opmode(data, arg, true);
@@ -1333,7 +1368,7 @@ static int sx127x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_freq);
 	ret = device_create_file(data->chardevice, &dev_attr_rssi);
 	ret = device_create_file(data->chardevice, &dev_attr_paoutput);
-	ret = device_create_file(data->chardevice, &dev_attr_power);
+	ret = device_create_file(data->chardevice, &dev_attr_dbm);
 
 	// these are LoRa specifc
 	ret = device_create_file(data->chardevice, &dev_attr_sf);
@@ -1371,7 +1406,7 @@ static int sx127x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_freq);
 	device_remove_file(data->chardevice, &dev_attr_rssi);
 	device_remove_file(data->chardevice, &dev_attr_paoutput);
-	device_remove_file(data->chardevice, &dev_attr_power);
+	device_remove_file(data->chardevice, &dev_attr_dbm);
 
 	device_remove_file(data->chardevice, &dev_attr_sf);
 	device_remove_file(data->chardevice, &dev_attr_bw);
@@ -1460,6 +1495,6 @@ static void __exit sx127x_exit(void)
 }
 
 module_exit(sx127x_exit);
-
 MODULE_LICENSE("GPL");
-MODULE_INFO(intree, "Y");
+
+//MODULE_INFO(intree, "Y");
