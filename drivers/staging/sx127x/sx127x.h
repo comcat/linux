@@ -3,9 +3,9 @@
 
 #include <linux/types.h>
 
-#define	 BW_125		0x00
-#define	 BW_250		0x01
-#define	 BW_500		0x02
+#define	 BW_125		0x07
+#define	 BW_250		0x08
+#define	 BW_500		0x09
 
 #define	 CR_5		0x01
 #define	 CR_6		0x02
