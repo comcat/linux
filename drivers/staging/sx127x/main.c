@@ -610,6 +610,43 @@ static int sx127x_set_crc(struct sx127x *data, bool crc)
 	return 0;
 }
 
+static ssize_t sx127x_crc_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct sx127x *data = dev_get_drvdata(dev);
+	u8 config2;
+	int crc;
+
+	mutex_lock(&data->mutex);
+	sx127x_reg_read(data->spidevice, SX127X_REG_LORA_MODEMCONFIG2, &config2);
+
+	crc = (config2 & SX127X_REG_LORA_MODEMCONFIG2_RXPAYLOADCRCON) >> 1;
+
+	mutex_unlock(&data->mutex);
+
+	return sprintf(buf, "%d\n", crc);
+}
+
+static ssize_t sx127x_crc_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t count)
+{
+	struct sx127x *data = dev_get_drvdata(dev);
+	int crc = 1;
+	if (kstrtoint(buf, 10, &crc)) {
+		goto out;
+	}
+	mutex_lock(&data->mutex);
+	sx127x_set_crc(data, crc);
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(crc, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+		   sx127x_crc_show, sx127x_crc_store);
+
 static ssize_t sx127x_opmode_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t count)
@@ -1374,6 +1411,7 @@ static int sx127x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_sf);
 	ret = device_create_file(data->chardevice, &dev_attr_bw);
 	ret = device_create_file(data->chardevice, &dev_attr_cr);
+	ret = device_create_file(data->chardevice, &dev_attr_crc);
 	ret = device_create_file(data->chardevice,
 							   &dev_attr_implicitheadermodeon);
 
@@ -1411,6 +1449,7 @@ static int sx127x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_sf);
 	device_remove_file(data->chardevice, &dev_attr_bw);
 	device_remove_file(data->chardevice, &dev_attr_cr);
+	device_remove_file(data->chardevice, &dev_attr_crc);
 	device_remove_file(data->chardevice, &dev_attr_implicitheadermodeon);
 
 	device_destroy(devclass, data->devt);
