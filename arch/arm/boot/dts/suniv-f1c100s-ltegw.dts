@@ -131,7 +131,7 @@
 		reg = <0x0>;
 		spi-max-frequency = <10000000>;
 
-		reset-gpios = <&pio 4 4 GPIO_ACTIVE_LOW>;			/* PE3 */
+		reset-gpios = <&pio 4 4 GPIO_ACTIVE_LOW>;			/* PE4 */
 		txrxswitch-gpios = <&pio 4 5 GPIO_ACTIVE_HIGH>,		/* PE5 */
 			<&pio 4 6 GPIO_ACTIVE_HIGH>;					/* PE6 */
 
@@ -167,6 +167,6 @@
 };
 
 &usbphy {
-	usb0_id_det-gpio = <&pio 4 2 GPIO_ACTIVE_HIGH>; /* PE2 */
+	usb0_id_det-gpio = <&pio 4 2 GPIO_ACTIVE_LOW>; /* PE2 */
 	status = "okay";
 };
