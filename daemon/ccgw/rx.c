@@ -12,7 +12,7 @@ void print_hex(uint8_t *buff, size_t len)
 	uint8_t b;
 
 	for (i = 0; i < len; i++) {
-		printf("%02X", buff[i]);
+		printf("%02X ", buff[i]);
 	}
 }
 
@@ -52,6 +52,11 @@ int setup_radio(int fd, enum sx127x_opmode opmode)
 
 	if (ioctl(fd, SX127X_IOCTL_CMD_SET_CRC, CRC_ON) != 0) {
 		printf("failed to set crc\n");
+		return 1;
+	}
+
+	if (ioctl(fd, SX127X_IOCTL_CMD_SET_OPMODE, opmode) != 0) {
+		printf("failed to set opmode\n");
 		return 1;
 	}
 }
