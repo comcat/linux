@@ -312,6 +312,7 @@
 			reg = <0x01c27000 0x400>;
 			interrupts = <7>;
 			clocks = <&ccu CLK_BUS_I2C0>;
+			resets = <&ccu RST_BUS_I2C0>;
 			status = "disabled";
 			#address-cells = <1>;
 			#size-cells = <0>;
