@@ -1238,16 +1238,15 @@ static void sx127x_irq_work_handler(struct work_struct *work)
 	sx127x_reg_read(data->spidevice, SX127X_REG_LORA_IRQFLAGS, &irqflags);
 
 	if (irqflags & SX127X_REG_LORA_IRQFLAGS_RXDONE) {
+
 		dev_warn(data->chardevice, "reading packet\n");
 		memset(&pkt, 0, sizeof(pkt));
 
 		sx127x_fifo_read_pkt(data->spidevice, buf, &len);
-		sx127x_reg_read(data->spidevice, SX127X_REG_LORA_PKTSNRVALUE,
-				&snr);
-		sx127x_reg_read(data->spidevice, SX127X_REG_LORA_PKTRSSIVALUE,
-				&rssi);
-		sx127x_reg_read24(data->spidevice, SX127X_REG_LORA_FEIMSB,
-				  &fei);
+
+		sx127x_reg_read(data->spidevice, SX127X_REG_LORA_PKTSNRVALUE, &snr);
+		sx127x_reg_read(data->spidevice, SX127X_REG_LORA_PKTRSSIVALUE, &rssi);
+		sx127x_reg_read24(data->spidevice, SX127X_REG_LORA_FEIMSB, &fei);
 
 		pkt.hdrlen = sizeof(pkt);
 		pkt.payloadlen = len;
@@ -1264,7 +1263,9 @@ static void sx127x_irq_work_handler(struct work_struct *work)
 		kfifo_in(&data->out, &pkt, sizeof(pkt));
 		kfifo_in(&data->out, buf, len);
 		wake_up(&data->readwq);
+
 	} else if (irqflags & SX127X_REG_LORA_IRQFLAGS_TXDONE) {
+
 		if (data->gpio_txen) {
 			gpiod_set_value(data->gpio_txen, 0);
 		}
@@ -1276,7 +1277,9 @@ static void sx127x_irq_work_handler(struct work_struct *work)
 		}
 		data->transmitted = 1;
 		wake_up(&data->writewq);
+
 	} else if (irqflags & SX127X_REG_LORA_IRQFLAGS_CADDONE) {
+
 		if (irqflags & SX127X_REG_LORA_IRQFLAGS_CADDETECTED) {
 			dev_info(data->chardevice,
 				 "CAD done, detected activity\n");
@@ -1284,6 +1287,7 @@ static void sx127x_irq_work_handler(struct work_struct *work)
 			dev_info(data->chardevice,
 				 "CAD done, nothing detected\n");
 		}
+
 	} else {
 		dev_err(&data->spidevice->dev,
 			"unhandled interrupt state %02x\n", (unsigned)irqflags);
