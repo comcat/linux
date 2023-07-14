@@ -78,10 +78,10 @@
 };
 
 /*
- * PC1 -- SPI0_CS
- * PC3 -- SPI0_MOSI
  * PC0 -- SPI0_CLK
+ * PC1 -- SPI0_CS
  * PC2 -- SPI0_MISO
+ * PC3 -- SPI0_MOSI
  * PE6 -- Interrupt
 */
 &spi0 {
@@ -91,17 +91,13 @@
 	spi-max-frequency = <10000000>;
 
 	mcp2515@0 {
-		#address-cells = <1>;
-		#size-cells = <1>;
-
 		compatible = "microchip,mcp2515";
-		reg = <0x0>;
+
 		spi-max-frequency = <10000000>;
+		reg = <0x0>;
 
 		interrupt-parent = <&pio>;
-		interrupts = <4 6 IRQ_TYPE_EDGE_RISING>;			/* PE6 / EINT3 */
-
-		reset-gpios = <&pio 4 7 GPIO_ACTIVE_LOW>;			/* PE7 */
+		interrupts = <4 6 IRQ_TYPE_EDGE_RISING>;			/* PE6 */
 	};
 };
 
