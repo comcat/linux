@@ -83,21 +83,23 @@
  * PC2 -- SPI0_MISO
  * PC3 -- SPI0_MOSI
  * PE6 -- Interrupt
+ * clock-frequency = <500000> 500KHz;
 */
 &spi0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&spi0_pins>;
+	spi-max-frequency = <50000000>;
 	status = "okay";
-	spi-max-frequency = <10000000>;
 
-	mcp2515@0 {
+	can0: mcp2515@0 {
 		compatible = "microchip,mcp2515";
-
-		spi-max-frequency = <10000000>;
 		reg = <0x0>;
+		clocks = <&osc24M>;
+		spi-max-frequency = <10000000>;
 
 		interrupt-parent = <&pio>;
-		interrupts = <4 6 IRQ_TYPE_EDGE_RISING>;			/* PE6 */
+		interrupts = <4 6 IRQ_TYPE_EDGE_RISING>;		/* PE6 */
+		status = "okay";
 	};
 };
 
@@ -114,15 +116,15 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&spi1_pins>;
 	status = "okay";
-	spi-max-frequency = <10000000>;
+	spi-max-frequency = <50000000>;
 
 	sx126x@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
+		spi-max-frequency = <10000000>;
 
 		compatible = "semtech,sx126x";
 		reg = <0x0>;
-		spi-max-frequency = <10000000>;
 
 		reset-gpios = <&pio 4 3 GPIO_ACTIVE_LOW>;			/* PE3 */
 
@@ -130,7 +132,6 @@
 		interrupts = <4 4 IRQ_TYPE_EDGE_RISING>;			/* PE4 / EINT3 */
 
 		busy-gpios = <&pio 4 5 GPIO_ACTIVE_HIGH>;			/* PE5 */
-
 	};
 };
 
