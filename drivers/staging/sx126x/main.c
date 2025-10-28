@@ -1,3 +1,22 @@
+/*
+ *  Copyright (c) 2025 - 2035 MaiKe Labs
+ *
+ *  driver for sx126x/asr6500
+ *
+ *	This program is free software: you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation, either version 3 of the License, or
+ *	(at your option) any later version.
+ *
+ *	This program is distributed in the hope that it will be useful,
+ *	but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *	GNU General Public License for more details.
+ *
+ *	You should have received a copy of the GNU General Public License
+ *	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+*/
 #include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/of_device.h>
@@ -12,6 +31,13 @@
 #include "sx126x_regs.h"
 #include "sx126x.h"
 
+/*
+ * F1C:
+ *  SPI  - SPI1 (PA0 ~ PA3)
+ *  RST  - PE3
+ *  DIO1 - PE4
+ *  BUSY - PE5
+*/
 #define SX126X_DRIVERNAME	"sx126x"
 #define SX126X_CLASSNAME	"sx126x"
 #define SX126X_DEVICENAME	"sx126x%d"
@@ -19,17 +45,10 @@
 static int devmajor;
 static struct class *devclass;
 
-static const char *invalid = "invalid";
-
 static unsigned bwmap[] = {20800, 31250, 41700, 62500, 125000, 250000, 500000};
-
 static char *crmap[] = {NULL, "4/5", "4/6", "4/7", "4/8"};
 
-static const char *paoutput[] = {"rfo", "pa_boost"};
-
-/*
- * Commands Interface
- */
+/* Commands Interface */
 typedef enum sx126x_commands_e
 {
 	SX126X_NOP						= 0x0,
@@ -150,7 +169,7 @@ struct sx126x {
 	struct device *chardevice;
 	struct work_struct irq_work;
 	struct spi_device *spi;
-	struct gpio_desc *gpio_reset, *gpio_txen, *gpio_rxen;
+	struct gpio_desc *gpio_reset, *gpio_busy, *gpio_swctrl;
 	u32 fosc;
 	struct mutex mutex;
 
@@ -183,6 +202,7 @@ struct sx126x {
 static LIST_HEAD(device_list);
 static DEFINE_MUTEX(device_list_lock);
 
+/* sx126x register and buffer api */
 static int sx126x_read_reg(struct spi_device *spi, u16 reg, u8 *result, size_t len)
 {
 	u8 cmd[3];
@@ -198,37 +218,19 @@ static int sx126x_read_reg(struct spi_device *spi, u16 reg, u8 *result, size_t l
 	return ret;
 }
 
-/*
- * Max len is 6
- * Return the status of 2nd NOP
- */
-static int sx126x_read_op_cmd(struct spi_device *spi, u8 cmd, u8 *data, size_t len)
-{
-	u8 tx[8] = {0};
-	int ret;
-
-	tx[0] = cmd;
-
-	ret = spi_write_then_read(spi, tx, len+2, data, len);
-
-	dev_dbg(&spi->dev, "read_op_cmd: @%02x %02x\n", cmd, data[1] << 8 | data[0]);
-
-	return ret;
-}
-
 static int sx126x_write_reg(struct spi_device *spi, u16 reg, u8 *value, size_t len)
 {
 	u8 cmd[SX126X_SIZE_WRITE_REGISTER];
-	int ret;
-
-	cmd[0] = SX126X_WRITE_REGISTER;
-	cmd[1] = (reg >> 8) & 0xff;
-	cmd[2] = reg & 0xff;
+	int ret = 0;
 
 	struct spi_transfer fifotransfers[] = {
 		{.tx_buf = &cmd, .len = SX126X_SIZE_WRITE_REGISTER},
 		{.tx_buf = value, .len = len},
 	};
+
+	cmd[0] = SX126X_WRITE_REGISTER;
+	cmd[1] = (reg >> 8) & 0xff;
+	cmd[2] = reg & 0xff;
 
 	//dev_info(&spi->dev, "reg write: %d\n", len);
 	//print_hex_dump(KERN_DEBUG, NULL, DUMP_PREFIX_NONE, 16, 1, value, len, true);
@@ -241,86 +243,7 @@ static int sx126x_write_reg(struct spi_device *spi, u16 reg, u8 *value, size_t l
 	return ret;
 }
 
-static int sx126x_write_op_cmd(struct spi_device *spi, u8 cmd, u8 *data, size_t len)
-{
-	u8 tx[12];
-	int ret;
-
-	tx[0] = cmd;
-
-	if (len > 0 && len <= 11) {
-		memcpy(tx+1, data, len);
-	}
-
-	ret = spi_write(spi, tx, len+1);
-
-	dev_dbg(&spi->dev, "write_op_cmd: @%02x %02x\n", cmd, data[1] << 8 | data[0]);
-
-	return ret;
-}
-
-static void sx126x_get_rxbuf_status(struct spi_device *spi, uint8_t *plen, uint8_t *rxbuf_start)
-{
-	uint8_t cmd[2] = {SX126X_GET_RX_BUFFER_STATUS, 0};
-	uint8_t buf[2] = {0};
-
-	spi_write_then_read(spi, cmd, 2, buf, 2);
-
-	*plen = buf[0];
-	*rxbuf_start = buf[1];
-}
-
-static int sx126x_write_buf(struct spi_device *spi, void *buffer, u8 len)
-{
-	int ret;
-	u8 cmd[2] = {SX126X_WRITE_BUFFER, 0};
-
-	struct spi_transfer fifotransfers[] = {
-		{.tx_buf = &cmd, .len = 2},
-		{.tx_buf = buffer, .len = len},
-	};
-
-	dev_info(&spi->dev, "FIFO write: %d\n", len);
-	print_hex_dump(KERN_DEBUG, NULL, DUMP_PREFIX_NONE, 16, 1, buffer, len, true);
-
-	spi_sync_transfer(spi, fifotransfers, ARRAY_SIZE(fifotransfers));
-
-	//if (memcmp(buffer, readbackbuff, len) != 0) {
-	//	dev_err(&spi->dev, "FIFO readback doesn't match\n");
-	//}
-	return ret;
-}
-
-static int sx126x_indexofstring(const char *str, const char **options,
-				unsigned noptions)
-{
-	int i;
-	for (i = 0; i < noptions; i++) {
-		if (sysfs_streq(str, options[i])) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-static int sx126x_get_pkt_rssi(struct spi_device *spi)
-{
-	int ret;
-	int rssi = 0;
-	u8 buf = 0;
-
-	u8 cmd[SX126X_SIZE_GET_RSSI_INST] = {
-        SX126X_GET_RSSI_INST,
-        SX126X_NOP,
-    };
-
-	//read_op_cmd(SX126X_GET_RSSI_INST, buf, 3);
-	ret = spi_write_then_read(spi, cmd, 2, &buf, 1);
-
-	rssi = -buf >> 1;
-
-	return rssi;
-}
+static void sx126x_get_rxbuf_status(struct spi_device *spi, uint8_t *plen, uint8_t *rxbuf_start);
 
 static int sx126x_read_buf(struct spi_device *spi, void *buffer, u8 *len)
 {
@@ -355,6 +278,69 @@ static int sx126x_read_buf(struct spi_device *spi, void *buffer, u8 *len)
 	*len = rxbytes;
 
 	return ret;
+}
+
+static int sx126x_write_buf(struct spi_device *spi, void *buffer, u8 len)
+{
+	int ret = 0;
+	u8 cmd[2] = {SX126X_WRITE_BUFFER, 0};
+
+	struct spi_transfer fifotransfers[] = {
+		{.tx_buf = &cmd, .len = 2},
+		{.tx_buf = buffer, .len = len},
+	};
+
+	dev_info(&spi->dev, "FIFO write: %d\n", len);
+	print_hex_dump(KERN_DEBUG, NULL, DUMP_PREFIX_NONE, 16, 1, buffer, len, true);
+
+	spi_sync_transfer(spi, fifotransfers, ARRAY_SIZE(fifotransfers));
+
+	//if (memcmp(buffer, readbackbuff, len) != 0) {
+	//	dev_err(&spi->dev, "FIFO readback doesn't match\n");
+	//}
+	return ret;
+}
+
+static void sx126x_get_rxbuf_status(struct spi_device *spi, uint8_t *plen, uint8_t *rxbuf_start)
+{
+	uint8_t cmd[2] = {SX126X_GET_RX_BUFFER_STATUS, 0};
+	uint8_t buf[2] = {0};
+
+	spi_write_then_read(spi, cmd, 2, buf, 2);
+
+	*plen = buf[0];
+	*rxbuf_start = buf[1];
+}
+
+static int sx126x_indexofstring(const char *str, const char **options,
+				unsigned noptions)
+{
+	int i;
+	for (i = 0; i < noptions; i++) {
+		if (sysfs_streq(str, options[i])) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static int sx126x_get_pkt_rssi(struct spi_device *spi)
+{
+	int ret;
+	int rssi = 0;
+	u8 buf = 0;
+
+	u8 cmd[SX126X_SIZE_GET_RSSI_INST] = {
+        SX126X_GET_RSSI_INST,
+        SX126X_NOP,
+    };
+
+	//read_op_cmd(SX126X_GET_RSSI_INST, buf, 3);
+	ret = spi_write_then_read(spi, cmd, 2, &buf, 1);
+
+	rssi = -buf >> 1;
+
+	return rssi;
 }
 
 /*
@@ -675,9 +661,10 @@ void sx126x_set_tx_power(struct spi_device *spi, int8_t dbm)
 
 static int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
 {
-	dev_warn(dev->chardevice, "Setting syncword to 0x%0X\n", syncword);
-
+	int status;
     uint8_t buffer[2] = {0x00};
+
+	dev_warn(dev->chardevice, "Setting syncword to 0x%0X\n", syncword);
 
 	buffer[0] = (syncword & 0xFF00) >> 8;	/* MSB */
 	buffer[1] = (syncword & 0xFF);			/* LSB */
@@ -691,7 +678,7 @@ static int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
     }
 	#endif
 
-	int status = sx126x_write_reg(dev->spi, SX126X_REG_LR_SYNCWORD, buffer, 2);
+	status = sx126x_write_reg(dev->spi, SX126X_REG_LR_SYNCWORD, buffer, 2);
 
     return status;
 }
@@ -755,32 +742,22 @@ static ssize_t sx126x_freq_show(struct device *dev,
 					    char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	u8 msb, mld, lsb;
-	u32 frf;
-	u32 freq;
-	mutex_lock(&data->mutex);
 
-	//sx126x_read_reg(data->spi, SX126X_REG_FRFMSB, &msb);
-	//sx126x_read_reg(data->spi, SX126X_REG_FRFMLD, &mld);
-	//sx126x_read_reg(data->spi, SX126X_REG_FRFLSB, &lsb);
+	//u32 frf;
+	//u32 freq;
+	//freq = ((u64) data->fosc * frf) / 524288;
 
-	frf = (msb << 16) | (mld << 8) | lsb;
-
-	freq = ((u64) data->fosc * frf) / 524288;
-
-	mutex_unlock(&data->mutex);
-
-	return sprintf(buf, "%u\n", freq);
+	return sprintf(buf, "%u\n", data->_tx_freq);
 }
 
-static int sx126x_set_freq(struct sx126x *dev, u64 freq)
+static int sx126x_set_freq(struct sx126x *dev, u32 freq)
 {
 	uint8_t cmd[5];
 
 	sx126x_calibrate_image(dev->spi, freq);
 
-	//freq = (uint32_t) ((double)frequency / (double)FREQ_STEP);
-	do_div(freq, (double)FREQ_STEP);
+	freq = (uint32_t) ((double)freq / (double)FREQ_STEP);
+	//do_div(freq, (double)FREQ_STEP);
 
 	cmd[0] = SX126X_SET_RF_FREQUENCY;
 	cmd[1] = (uint8_t) ((freq >> 24) & 0xFF);
@@ -789,6 +766,8 @@ static int sx126x_set_freq(struct sx126x *dev, u64 freq)
 	cmd[4] = (uint8_t) (freq & 0xFF);
 
 	spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
+
+	dev->_tx_freq = freq;
 
 	return 0;
 }
@@ -827,7 +806,7 @@ static ssize_t sx126x_sf_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	u8 config2;
+	//uint8_t config2;
 	int sf;
 
 	mutex_lock(&data->mutex);
@@ -870,8 +849,8 @@ static ssize_t sx126x_bw_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	u8 config1;
-	int bw, ret;
+	//uint8_t config1;
+	int bw, ret = 0;
 
 	mutex_lock(&data->mutex);
 
@@ -885,7 +864,7 @@ static ssize_t sx126x_bw_show(struct device *dev, struct device_attribute *attr,
 }
 
 static int sx126x_set_bw(struct sx126x *data, unsigned bw){
-	u8 r;
+
 	dev_info(data->chardevice, "setting BW to %u\n", bw);
 
 	// set the BW
@@ -897,7 +876,7 @@ static ssize_t sx126x_bw_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
-	struct sx126x *data = dev_get_drvdata(dev);
+	//struct sx126x *data = dev_get_drvdata(dev);
 	return count;
 }
 
@@ -908,12 +887,11 @@ static ssize_t sx126x_cr_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	u8 config1;
-	int cr, ret;
+	int cr, ret = 0;
 
 	mutex_lock(&data->mutex);
 
-	sprintf(buf, "%s\n", crmap[cr]);
+	//sprintf(buf, "%s\n", crmap[cr]);
 
 	mutex_unlock(&data->mutex);
 
@@ -921,7 +899,7 @@ static ssize_t sx126x_cr_show(struct device *dev,
 }
 
 static int sx126x_set_cr(struct sx126x *data, unsigned cr){
-	u8 r;
+	//u8 r;
 	dev_info(data->chardevice, "setting CR to %u\n", cr);
 
 
@@ -932,15 +910,15 @@ static ssize_t sx126x_cr_store(struct device *dev,
 				       struct device_attribute *attr,
 				       const char *buf, size_t count)
 {
-	struct sx126x *data = dev_get_drvdata(dev);
+	//struct sx126x *data = dev_get_drvdata(dev);
 	return count;
 }
 
 static DEVICE_ATTR(cr, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 				   sx126x_cr_show, sx126x_cr_store);
 
-/////////////////////////////////////////////////////////////////////////////////
 
+/* linux driver api */
 static int sx126x_dev_open(struct inode *inode, struct file *file)
 {
 	struct sx126x *data;
@@ -1152,9 +1130,9 @@ static void sx126x_irq_work_handler(struct work_struct *work)
 
 	} else if (irqflags & SX126X_IRQ_TX_DONE) {
 
-		if (data->gpio_txen) {
-			gpiod_set_value(data->gpio_txen, 0);
-		}
+		//if (data->gpio_txen) {
+		//	gpiod_set_value(data->gpio_txen, 0);
+		//}
 		dev_warn(data->chardevice, "transmitted packet\n");
 
 
@@ -1185,7 +1163,6 @@ static int sx126x_probe(struct spi_device *spi)
 {
 	int ret = 0;
 	struct sx126x *data;
-	u8 version;
 	int irq;
 	unsigned minor;
 
@@ -1213,45 +1190,51 @@ static int sx126x_probe(struct spi_device *spi)
 
 	ret = kfifo_alloc(&data->out, PAGE_SIZE, GFP_KERNEL);
 	if (ret) {
-		printk("Failed to allocate out fifo\n");
+		printk("<0>Failed to allocate out fifo\n");
 		goto err_allocoutfifo;
 	}
 
+
+	// get the swctrl gpios
+	data->gpio_swctrl =
+	    devm_gpiod_get(&spi->dev, "swctrl", GPIOD_OUT_LOW);
+
+	if (IS_ERR(data->gpio_swctrl)) {
+		dev_warn(&spi->dev, "NO SWCTRL enable\n");
+		data->gpio_swctrl = NULL;
+	} else {
+		/* enable the swctrl */
+		gpiod_set_value(data->gpio_swctrl, 1);
+	}
+
+	// get the busy gpios
+	data->gpio_busy =
+	    devm_gpiod_get(&spi->dev, "busy", GPIOD_OUT_LOW);
+
+	if (IS_ERR(data->gpio_busy)) {
+		dev_warn(&spi->dev, "NO BUSY enable\n");
+		data->gpio_busy = NULL;
+	}
+
 	// get the reset gpio and reset the chip
-	data->gpio_reset = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_LOW);
+	data->gpio_reset = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_HIGH);
 
 	if (IS_ERR(data->gpio_reset)) {
 		dev_err(&spi->dev, "reset gpio is required");
 		ret = -ENOMEM;
 		goto err_resetgpio;
+	} else {
+		// reset the sx126x
+		gpiod_set_value(data->gpio_reset, 0);
+		mdelay(80);
+		gpiod_set_value(data->gpio_reset, 1);
+		mdelay(40);
 	}
 
-	gpiod_set_value(data->gpio_reset, 1);
-	mdelay(100);
-	gpiod_set_value(data->gpio_reset, 0);
-	mdelay(100);
-
-	printk("<0>line %d @ %s\n", __LINE__, __FUNCTION__);
+	//printk("<0>line %d @ %s\n", __LINE__, __FUNCTION__);
 
 	if (0x22 != sx126x_get_status(spi)) {
 		dev_err(&spi->dev, "sx126x status error, maybe no spi connection");
-	}
-
-	// get the other optional gpios
-	data->gpio_txen =
-	    devm_gpiod_get_index(&spi->dev, "txrxswitch", 0, GPIOD_OUT_LOW);
-
-	if (IS_ERR(data->gpio_txen)) {
-		dev_warn(&spi->dev, "NO TX enable\n");
-		data->gpio_txen = NULL;
-	}
-
-	data->gpio_rxen =
-	    devm_gpiod_get_index(&spi->dev, "txrxswitch", 1, GPIOD_OUT_LOW);
-
-	if (IS_ERR(data->gpio_rxen)) {
-		dev_warn(&spi->dev, "NO RX enable\n");
-		data->gpio_rxen = NULL;
 	}
 
 	// get the irq
@@ -1261,8 +1244,7 @@ static int sx126x_probe(struct spi_device *spi)
 		ret = -EINVAL;
 		goto err_irq;
 	}
-	devm_request_irq(&spi->dev, irq, sx126x_irq, 0, SX126X_DRIVERNAME,
-			 data);
+	devm_request_irq(&spi->dev, irq, sx126x_irq, 0, SX126X_DRIVERNAME, data);
 
 	// create the frontend device and stash it in the spi device
 	mutex_lock(&device_list_lock);
@@ -1273,7 +1255,7 @@ static int sx126x_probe(struct spi_device *spi)
 									  SX126X_DEVICENAME, minor);
 
 	if (IS_ERR(data->chardevice)) {
-		printk("Failed to create char device\n");
+		printk("<0>Failed to create char device\n");
 		ret = -ENOMEM;
 		goto err_createdevice;
 	}
@@ -1298,14 +1280,13 @@ static int sx126x_probe(struct spi_device *spi)
 
 	return 0;
 
- err_sysfs:
+ //err_sysfs:
 	device_destroy(devclass, data->devt);
 
  err_createdevice:
 	mutex_unlock(&device_list_lock);
 
  err_irq:
- err_chipid:
  err_resetgpio:
 	kfifo_free(&data->out);
 
@@ -1340,7 +1321,7 @@ static int sx126x_remove(struct spi_device *spi)
 
 static const struct of_device_id sx126x_of_match[] = {
 	{
-		.compatible = "semtech, sx126x",
+		.compatible = "semtech,sx126x",
 	},
 	{},
 };
@@ -1358,6 +1339,7 @@ static struct spi_driver sx126x_driver = {
    },
 };
 
+/* char & spi dev api */
 static int __init sx126x_init(void)
 {
 	int ret;
@@ -1365,18 +1347,18 @@ static int __init sx126x_init(void)
 	ret = register_chrdev(0, SX126X_DRIVERNAME, &fops);
 
 	if (ret < 0) {
-		printk("Failed to register char device\n");
+		printk("<0>Failed to register char device\n");
 		goto out;
 	}
 
 	devmajor = ret;
 
-	printk("dev_major = %d\n", devmajor);
+	printk("<0>dev_major = %d\n", devmajor);
 
 	devclass = class_create(THIS_MODULE, SX126X_CLASSNAME);
 
 	if (!devclass) {
-		printk("Failed to register class\n");
+		printk("<0>Failed to register class\n");
 		ret = -ENOMEM;
 		goto out1;
 	}
@@ -1395,8 +1377,7 @@ static int __init sx126x_init(void)
 	devclass = NULL;
 
  out:
-
-	printk("SX126x init OK.");
+	printk("<0>SX126x init OK.");
 
 	return ret;
 }
