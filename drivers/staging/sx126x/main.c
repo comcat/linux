@@ -1194,7 +1194,6 @@ static int sx126x_probe(struct spi_device *spi)
 		goto err_allocoutfifo;
 	}
 
-
 	// get the swctrl gpios
 	data->gpio_swctrl =
 	    devm_gpiod_get(&spi->dev, "swctrl", GPIOD_OUT_LOW);
@@ -1224,17 +1223,24 @@ static int sx126x_probe(struct spi_device *spi)
 		ret = -ENOMEM;
 		goto err_resetgpio;
 	} else {
-		// reset the sx126x
-		gpiod_set_value(data->gpio_reset, 0);
-		mdelay(80);
+		/*
+		 * reset the sx126x
+		 * reset pin is set to ACTIVE_LOW, so:
+		 *  gpio_set(1) is LOW
+		 *  gpio_set(0) is HIGH
+		*/
 		gpiod_set_value(data->gpio_reset, 1);
-		mdelay(40);
+		mdelay(100);
+		gpiod_set_value(data->gpio_reset, 0);
+		mdelay(100);
 	}
 
 	//printk("<0>line %d @ %s\n", __LINE__, __FUNCTION__);
 
-	if (0x22 != sx126x_get_status(spi)) {
+	if (0x2a != sx126x_get_status(spi)) {
 		dev_err(&spi->dev, "sx126x status error, maybe no spi connection");
+	} else {
+		printk("<0>status = 0x%x\n", sx126x_get_status(spi));
 	}
 
 	// get the irq
