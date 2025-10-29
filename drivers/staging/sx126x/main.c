@@ -191,10 +191,10 @@ struct sx126x {
 	/* rf param */
 	bool _cad_on;
 	size_t _preamble_len;
-	int8_t _dbm;
 	u8 _sf;
 	u8 _bw;
 	u8 _cr;
+	u8 _tx_power;
 	u32 _tx_freq;
 	bool _ldro;
 };
@@ -657,9 +657,7 @@ void sx126x_set_tx_power(struct spi_device *spi, int8_t dbm)
     spi_write(spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
 }
 
-/////////////////////////////////////////////////////////////////////////////////
-
-static int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
+int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
 {
 	int status;
     uint8_t buffer[2] = {0x00};
@@ -683,6 +681,53 @@ static int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
     return status;
 }
 
+static int sx126x_set_freq(struct sx126x *dev, u32 freq)
+{
+	uint8_t cmd[5];
+
+	sx126x_calibrate_image(dev->spi, freq);
+
+	freq = (uint32_t) ((double)freq / (double)FREQ_STEP);
+	//do_div(freq, (double)FREQ_STEP);
+
+	cmd[0] = SX126X_SET_RF_FREQUENCY;
+	cmd[1] = (uint8_t) ((freq >> 24) & 0xFF);
+	cmd[2] = (uint8_t) ((freq >> 16) & 0xFF);
+	cmd[3] = (uint8_t) ((freq >> 8) & 0xFF);
+	cmd[4] = (uint8_t) (freq & 0xFF);
+
+	spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
+
+	dev->_tx_freq = freq;
+
+	return 0;
+}
+
+int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
+{
+	data->_sf = SF10;
+	data->_bw = BW500;
+	data->_cr = CR46;
+	data->_ldro = true;
+
+	data->_tx_freq = freq;
+
+	data->_tx_power = 22;
+
+	sx126x_set_stop_rx_timer_on_preamble(data->spi, true);
+
+	sx126x_set_pkt_type(data->spi, SX126X_PKT_TYPE_LORA);
+	sx126x_set_lora_symb_num_timeout(data->spi, 0);
+
+	sx126x_set_lora_modulation_params(data->spi, data->_sf, data->_bw, data->_cr, data->_ldro);
+	sx126x_set_freq(data, data->_tx_freq);
+	sx126x_set_tx_power(data->spi, data->_tx_power);
+
+	// set pkt param
+	return 0;
+}
+/////////////////////////////////////////////////////////////////////////////////
+
 static int sx126x_set_crc(struct sx126x *data, bool crc)
 {
 	dev_warn(data->chardevice, "Setting crc to %d\n", crc);
@@ -702,11 +747,6 @@ static ssize_t sx126x_crc_show(struct device *dev, struct device_attribute *attr
 	int crc;
 
 	mutex_lock(&data->mutex);
-
-	//sx126x_read_reg(data->spi, SX126X_REG_LORA_MODEMCONFIG2, &config2);
-	//crc = config2 >> SX126X_REG_LORA_MODEMCONFIG2_CRCON_SHIFT;
-
-	dev_warn(dev, "cfg2: 0x%02X\n", config2);
 
 	mutex_unlock(&data->mutex);
 
@@ -743,33 +783,7 @@ static ssize_t sx126x_freq_show(struct device *dev,
 {
 	struct sx126x *data = dev_get_drvdata(dev);
 
-	//u32 frf;
-	//u32 freq;
-	//freq = ((u64) data->fosc * frf) / 524288;
-
 	return sprintf(buf, "%u\n", data->_tx_freq);
-}
-
-static int sx126x_set_freq(struct sx126x *dev, u32 freq)
-{
-	uint8_t cmd[5];
-
-	sx126x_calibrate_image(dev->spi, freq);
-
-	freq = (uint32_t) ((double)freq / (double)FREQ_STEP);
-	//do_div(freq, (double)FREQ_STEP);
-
-	cmd[0] = SX126X_SET_RF_FREQUENCY;
-	cmd[1] = (uint8_t) ((freq >> 24) & 0xFF);
-	cmd[2] = (uint8_t) ((freq >> 16) & 0xFF);
-	cmd[3] = (uint8_t) ((freq >> 8) & 0xFF);
-	cmd[4] = (uint8_t) (freq & 0xFF);
-
-	spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
-
-	dev->_tx_freq = freq;
-
-	return 0;
 }
 
 static ssize_t sx126x_freq_store(struct device *dev,
@@ -917,7 +931,6 @@ static ssize_t sx126x_cr_store(struct device *dev,
 static DEVICE_ATTR(cr, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 				   sx126x_cr_show, sx126x_cr_store);
 
-
 /* linux driver api */
 static int sx126x_dev_open(struct inode *inode, struct file *file)
 {
@@ -1030,17 +1043,20 @@ static long sx126x_dev_ioctl(struct file *filp, unsigned int cmd,
 	mutex_lock(&data->mutex);
 
 	switch (ioctlcmd) {
+		case SX126X_IOCTL_CMD_SETUP_V0:
+			ret = sx126x_setup_v0(data, arg);
+			break;
 		case SX126X_IOCTL_CMD_SET_FREQ:
 			ret = sx126x_set_freq(data, arg);
 			break;
 		case SX126X_IOCTL_CMD_GET_FREQ:
-			ret = 0;
+			ret = data->_tx_freq;
 			break;
 		case SX126X_IOCTL_CMD_SET_SF:
 			ret = sx126x_set_sf(data, arg);
 			break;
 		case SX126X_IOCTL_CMD_GET_SF:
-			ret = 0;
+			ret = data->_sf;
 			break;
 		case SX126X_IOCTL_CMD_SET_BW:
 			ret = sx126x_set_bw(data, arg);
@@ -1353,18 +1369,18 @@ static int __init sx126x_init(void)
 	ret = register_chrdev(0, SX126X_DRIVERNAME, &fops);
 
 	if (ret < 0) {
-		printk("<0>Failed to register char device\n");
+		printk("Failed to register char device\n");
 		goto out;
 	}
 
 	devmajor = ret;
 
-	printk("<0>dev_major = %d\n", devmajor);
+	printk("dev_major = %d\n", devmajor);
 
 	devclass = class_create(THIS_MODULE, SX126X_CLASSNAME);
 
 	if (!devclass) {
-		printk("<0>Failed to register class\n");
+		printk("Failed to register class\n");
 		ret = -ENOMEM;
 		goto out1;
 	}
@@ -1383,7 +1399,7 @@ static int __init sx126x_init(void)
 	devclass = NULL;
 
  out:
-	printk("<0>SX126x init OK.");
+	printk("SX126x init OK");
 
 	return ret;
 }
