@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR X11)
+/*
+ * Copyright 2023 BH1RBH <jack.tan@jackslab.org>
+ */
+
+/dts-v1/;
+#include "egw-core-v2.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	model = "EGW M6";
+	compatible = "egw,egw-m6", "allwinner,suniv-f1c100s",
+		     "allwinner,suniv";
+
+	aliases {
+		serial0 = &uart0;
+		spi0 = &spi0;
+		spi1 = &spi1;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	reg_vcc3v3: vcc3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+};
+
+&de {
+	status = "okay";
+};
+
+&mmc0 {
+	vmmc-supply = <&reg_vcc3v3>;
+	bus-width = <4>;
+	broken-cd;
+	status = "okay";
+};
+
+&otg_sram {
+	status = "okay";
+};
+
+&i2c0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins>;
+	status = "okay";
+
+	pcf8563: rtc@51 {
+		compatible = "nxp,pcf8563";
+		reg = <0x51>;
+	};
+};
+
+/*
+ * PC0 -- SPI0_CLK
+ * PC1 -- SPI0_CS
+ * PC2 -- SPI0_MISO
+ * PC3 -- SPI0_MOSI
+ * PD19 -- Reset (aka: LCD_RST)
+ * PD18 -- Interrupt (aka: LCD_DC)
+ * PD17 -- LR_BUSY (aka: IO9)
+ * PD16 -- SW_CTRL (aka: IO8)
+ * clock-frequency = <500000> 500KHz;
+*/
+&spi0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi0_pins>;
+	status = "okay";
+	spi-max-frequency = <16000000>;
+
+	sx126x@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		spi-max-frequency = <16000000>;
+
+		compatible = "semtech,sx1260";
+		reg = <0x0>;
+
+		reset-gpios = <&pio 3 19 GPIO_ACTIVE_LOW>;			/* PD19 */
+
+		interrupt-parent = <&pio>;
+		interrupts = <3 18 IRQ_TYPE_EDGE_RISING>;			/* PD18 / EINT3 */
+
+		busy-gpios = <&pio 3 17 GPIO_ACTIVE_HIGH>;			/* PD17 */
+
+		swctrl-gpios = <&pio 3 16 GPIO_ACTIVE_HIGH>;		/* PD16 */
+	};
+};
+
+
+/*
+ * PA0 -- SPI1_CS
+ * PA1 -- SPI1_MOSI
+ * PA2 -- SPI1_CLK
+ * PA3 -- SPI1_MISO
+ * PE3 -- Reset
+ * PE4 -- Interrupt
+ * PE5 -- LR_BUSY
+*/
+&spi1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi1_pins>;
+	status = "okay";
+	spi-max-frequency = <16000000>;
+
+	sx126x@1 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		spi-max-frequency = <16000000>;
+
+		compatible = "semtech,sx126x";
+		reg = <0x0>;
+
+		reset-gpios = <&pio 4 3 GPIO_ACTIVE_LOW>;			/* PE3 */
+
+		interrupt-parent = <&pio>;
+		interrupts = <4 4 IRQ_TYPE_EDGE_RISING>;			/* PE4 / EINT3 */
+
+		busy-gpios = <&pio 4 5 GPIO_ACTIVE_HIGH>;			/* PE5 */
+	};
+};
+
+/*
+&tcon0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&lcd_rgb666_pins>;
+	status = "okay";
+};
+
+&tcon0_out {
+	tcon0_out_lcd: endpoint@0 {
+		reg = <0>;
+		remote-endpoint = <&panel_input>;
+	};
+};
+*/
+
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins>;
+	status = "okay";
+};
+
+&usb_otg {
+	dr_mode = "otg";
+	status = "okay";
+};
+
+&usbphy {
+	usb0_id_det-gpio = <&pio 4 2 GPIO_ACTIVE_HIGH>; /* PE2 is low in m6, 1: enter device mode */
+	status = "okay";
+};
