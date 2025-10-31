@@ -33,6 +33,70 @@
 #define SX126X_PKT_TYPE_BPSK						0x02
 #define SX126X_PKT_TYPE_LR_FHSS						0x03
 
+//Radio complete Wake-up Time with TCXO stabilisation time
+#define RADIO_TCXO_SETUP_TIME                         5	// [ms]
+
+//SX126X_CMD_SET_REGULATOR_MODE
+#define SX126X_REGULATOR_LDO                          0x00	//  7     0     set regulator mode: LDO (default)
+#define SX126X_REGULATOR_DC_DC                        0x01	//  7     0                         DC-DC
+
+//SX126X_CMD_SET_DIO3_AS_TCXO_CTRL
+#define SX126X_DIO3_OUTPUT_1_6                        0x00	//  7     0     DIO3 voltage output for TCXO: 1.6 V
+#define SX126X_DIO3_OUTPUT_1_7                        0x01	//  7     0                                   1.7 V
+#define SX126X_DIO3_OUTPUT_1_8                        0x02	//  7     0                                   1.8 V
+#define SX126X_DIO3_OUTPUT_2_2                        0x03	//  7     0                                   2.2 V
+#define SX126X_DIO3_OUTPUT_2_4                        0x04	//  7     0                                   2.4 V
+#define SX126X_DIO3_OUTPUT_2_7                        0x05	//  7     0                                   2.7 V
+#define SX126X_DIO3_OUTPUT_3_0                        0x06	//  7     0                                   3.0 V
+#define SX126X_DIO3_OUTPUT_3_3                        0x07	//  7     0                                   3.3 V
+
+//SX126X_CMD_SET_TX_PARAMS
+#define SX126X_PA_RAMP_10U                            0x00	//  7     0     ramp time: 10 us
+#define SX126X_PA_RAMP_20U                            0x01	//  7     0                20 us
+#define SX126X_PA_RAMP_40U                            0x02	//  7     0                40 us
+#define SX126X_PA_RAMP_80U                            0x03	//  7     0                80 us
+#define SX126X_PA_RAMP_200U                           0x04	//  7     0                200 us
+#define SX126X_PA_RAMP_800U                           0x05	//  7     0                800 us
+#define SX126X_PA_RAMP_1700U                          0x06	//  7     0                1700 us
+#define SX126X_PA_RAMP_3400U                          0x07	//  7     0                3400 us
+
+//SX126X_CMD_CALIBRATE
+#define SX126X_CALIBRATE_IMAGE_OFF                    0b00000000	//  6     6     image calibration: disabled
+#define SX126X_CALIBRATE_IMAGE_ON                     0b01000000	//  6     6                        enabled
+#define SX126X_CALIBRATE_ADC_BULK_P_OFF               0b00000000	//  5     5     ADC bulk P calibration: disabled
+#define SX126X_CALIBRATE_ADC_BULK_P_ON                0b00100000	//  5     5                             enabled
+#define SX126X_CALIBRATE_ADC_BULK_N_OFF               0b00000000	//  4     4     ADC bulk N calibration: disabled
+#define SX126X_CALIBRATE_ADC_BULK_N_ON                0b00010000	//  4     4                             enabled
+#define SX126X_CALIBRATE_ADC_PULSE_OFF                0b00000000	//  3     3     ADC pulse calibration: disabled
+#define SX126X_CALIBRATE_ADC_PULSE_ON                 0b00001000	//  3     3                            enabled
+#define SX126X_CALIBRATE_PLL_OFF                      0b00000000	//  2     2     PLL calibration: disabled
+#define SX126X_CALIBRATE_PLL_ON                       0b00000100	//  2     2                      enabled
+#define SX126X_CALIBRATE_RC13M_OFF                    0b00000000	//  1     1     13 MHz RC osc. calibration: disabled
+#define SX126X_CALIBRATE_RC13M_ON                     0b00000010	//  1     1                                 enabled
+#define SX126X_CALIBRATE_RC64K_OFF                    0b00000000	//  0     0     64 kHz RC osc. calibration: disabled
+#define SX126X_CALIBRATE_RC64K_ON                     0b00000001	//  0     0                                 enabled
+
+//SX126X_CMD_CALIBRATE_IMAGE
+#define SX126X_CAL_IMG_430_MHZ_1                      0x6B
+#define SX126X_CAL_IMG_430_MHZ_2                      0x6F
+#define SX126X_CAL_IMG_470_MHZ_1                      0x75
+#define SX126X_CAL_IMG_470_MHZ_2                      0x81
+#define SX126X_CAL_IMG_779_MHZ_1                      0xC1
+#define SX126X_CAL_IMG_779_MHZ_2                      0xC5
+#define SX126X_CAL_IMG_863_MHZ_1                      0xD7
+#define SX126X_CAL_IMG_863_MHZ_2                      0xDB
+#define SX126X_CAL_IMG_902_MHZ_1                      0xE1
+#define SX126X_CAL_IMG_902_MHZ_2                      0xE9
+
+//SX126X_CMD_SET_PA_CONFIG
+#define SX126X_PA_CONFIG_HP_MAX                       0x07
+#define SX126X_PA_CONFIG_SX1268                       0x01
+#define SX126X_PA_CONFIG_PA_LUT                       0x01
+
+//SX126X_CMD_SET_RX_TX_FALLBACK_MODE
+#define SX126X_RX_TX_FALLBACK_MODE_FS                 0x40	//  7     0     after Rx/Tx go to: FS mode
+#define SX126X_RX_TX_FALLBACK_MODE_STDBY_XOSC         0x30	//  7     0                        standby with crystal oscillator
+#define SX126X_RX_TX_FALLBACK_MODE_STDBY_RC           0x20	//  7     0                        standby with RC oscillator (default)
 ///////////////////////////////////////////////////////////
 //SX126X_CMD_GET_STATUS
 #define SX126X_STATUS_MODE_STDBY_RC                   0b00100000	//  6     4     current chip mode: STDBY_RC

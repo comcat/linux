@@ -373,6 +373,43 @@ void sx126x_set_pkt_type(struct spi_device *spi, uint8_t pkt_t)
 	spi_write(spi, cmd, SX126X_SIZE_SET_PKT_TYPE);
 }
 
+int sx126x_set_lora_pkt_params(struct spi_device *spi, size_t pkt_len)
+{
+	uint8_t cmd[SX126X_SIZE_SET_PKT_PARAMS_LORA];
+	int ret = 0;
+	u8 reg_val = 0;
+
+	int _preamble_len = 8;
+
+	cmd[0] = SX126X_SET_PKT_PARAMS;
+
+	cmd[1] = (_preamble_len>> 8) & 0xFF;
+    cmd[2] = _preamble_len;
+
+    cmd[3] = 0x00;   /* Explicit Header */
+
+    //cmd[4] = 0x30;   // 48 Bytes payload len
+	cmd[4] = pkt_len;
+
+    cmd[5] = 0x01;   /* crc on */
+    cmd[6] = 0x00;   /* standard iq, no inverted iq */
+
+	ret = spi_write(spi, cmd, SX126X_SIZE_SET_PKT_PARAMS_LORA);
+
+	// WORKAROUND - Optimizing the Inverted IQ Operation, see datasheet DS_SX1261-2_V1.2 §15.4
+	if (0 == ret) {
+		ret = sx126x_read_reg(spi, SX126X_REG_IQ_POLARITY, &reg_val, 1);
+		if (ret == 0) {
+			reg_val |= (1 << 2);	/* bit 2 set to 1 when using standard IQ polarity */
+			//reg_val &= ~( 1 << 2 );  // Bit 2 set to 0 when using inverted IQ polarity
+			ret = sx126x_write_reg(spi, SX126X_REG_IQ_POLARITY, &reg_val, 1);
+		}
+	}
+    // WORKAROUND END
+
+	return ret;
+}
+
 void sx126x_set_stop_rx_timer_on_preamble(struct spi_device *spi, bool enable)
 {
 	u8 cmd[2];
@@ -626,8 +663,6 @@ void sx126x_set_tx_power(struct spi_device *spi, int8_t dbm)
 {
     uint8_t cmd[3] = {0};
 
-	cmd[0] = SX126X_SET_TX_PARAMS;
-
 	// sx1262 or sx1268
 	if (dbm > 22) {
 		dbm = 22;
@@ -644,15 +679,10 @@ void sx126x_set_tx_power(struct spi_device *spi, int8_t dbm)
 	sx126x_set_over_current_protect(spi, 0x38);		// set max current to 140mA
 	//write_reg(SX126X_REG_OCP, 0x38);				// current max 160mA for the whole device
 
+	cmd[0] = SX126X_SET_TX_PARAMS;
     cmd[1] = dbm;
-
-    //if ( _crystal_select == 0) {
-    // TCXO
-	cmd[2] = SX126X_PA_RAMP_200U;
-    //} else {
-    // XTAL
-    //    cmd[2] = RADIO_RAMP_20_US;
-    //}
+	cmd[2] = SX126X_PA_RAMP_200U;				// TCXO
+    // cmd[2] = RADIO_RAMP_20_US;				// XTAL
 
     spi_write(spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
 }
@@ -666,15 +696,6 @@ int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
 
 	buffer[0] = (syncword & 0xFF00) >> 8;	/* MSB */
 	buffer[1] = (syncword & 0xFF);			/* LSB */
-
-    //int status = sx126x_read_reg(dev->spi, SX126X_REG_LR_SYNCWORD, buffer, 2);
-
-	#if 0
-    if(status == 0) {
-        buffer[0] = (buffer[0] & ~0xF0) + (sync_word & 0xF0);
-        buffer[1] = (buffer[1] & ~0xF0) + ((sync_word & 0x0F) << 4);
-    }
-	#endif
 
 	status = sx126x_write_reg(dev->spi, SX126X_REG_LR_SYNCWORD, buffer, 2);
 
@@ -726,6 +747,50 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	// set pkt param
 	return 0;
 }
+
+void sx126x_reset(struct sx126x *data)
+{
+	/*
+	 * reset the sx126x
+	 * reset pin is set to ACTIVE_LOW, so:
+	 *  gpio_set(1) is LOW
+	 *  gpio_set(0) is HIGH
+	*/
+	gpiod_set_value(data->gpio_reset, 1);
+	mdelay(100);
+	gpiod_set_value(data->gpio_reset, 0);
+	mdelay(100);
+}
+
+int sx126x_cfg_tx_clamp(struct sx126x *data)
+{
+	u8 reg_val = 0;
+	int ret = sx126x_read_reg(data->spi, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
+	if (0 == ret) {
+		//reg_val |= SX126X_REG_TX_CLAMP_CFG_MASK;
+		reg_val |= 0x1E;
+		ret = sx126x_write_reg(data->spi, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
+	}
+
+	return ret;
+}
+
+void sx126x_workaround_ant_mismatch(struct sx126x *data)
+{
+    /*
+     * Better Resistance of the SX1262 Tx to Antenna Mismatch
+     * see DS_SX1261-2_V1.2 datasheet chapter 15.2
+     * RegTxClampConfig = @address 0x08D8
+     *
+     * The register modification must be done
+     * after a Power On Reset, or a wake-up
+     * from cold Start
+    */
+
+    //spi_write_reg(data->spi, 0x08D8, read_reg(0x08D8) | 0x1E);
+	sx126x_cfg_tx_clamp(data);
+}
+
 /////////////////////////////////////////////////////////////////////////////////
 
 static int sx126x_set_crc(struct sx126x *data, bool crc)
@@ -1258,6 +1323,28 @@ static int sx126x_probe(struct spi_device *spi)
 	} else {
 		printk("<0>status = 0x%x\n", sx126x_get_status(spi));
 	}
+
+	///////////////////////////////////////////////////////////
+	/* setup the basic lora cfg */
+	sx126x_workaround_ant_mismatch(data);
+
+	sx126x_set_regulator_mode(spi, SX126X_REGULATOR_DC_DC);
+
+	sx126x_set_dio3_as_tcxo_ctrl(spi, SX126X_DIO3_OUTPUT_1_8, RADIO_TCXO_SETUP_TIME << 6);
+
+	sx126x_calibrate(spi, SX126X_CALIBRATE_IMAGE_ON
+		| SX126X_CALIBRATE_ADC_BULK_P_ON
+		| SX126X_CALIBRATE_ADC_BULK_N_ON
+		| SX126X_CALIBRATE_ADC_PULSE_ON
+		| SX126X_CALIBRATE_PLL_ON
+		| SX126X_CALIBRATE_RC13M_ON | SX126X_CALIBRATE_RC64K_ON);
+
+    sx126x_set_dio2_as_rfswitch_ctrl(spi, true);
+
+    sx126x_set_buffer_base_addr(spi, 0, 0);
+
+    sx126x_set_syncword(data, 0x1212);
+	///////////////////////////////////////////////////////////
 
 	// get the irq
 	irq = irq_of_parse_and_map(spi->dev.of_node, 0);
