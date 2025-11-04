@@ -44,6 +44,7 @@
 
 static int devmajor;
 static struct class *devclass;
+static bool tx_active = false;
 
 static unsigned bwmap[] = {20800, 31250, 41700, 62500, 125000, 250000, 500000};
 static char *crmap[] = {NULL, "4/5", "4/6", "4/7", "4/8"};
@@ -448,7 +449,7 @@ void sx126x_config_dio_irq(struct spi_device *spi, uint16_t irq_mask, uint16_t d
 	spi_write(spi, cmd, SX126X_SIZE_SET_DIO_IRQ_PARAMS);
 }
 
-void sx126x_set_dio3_as_tcxo_ctrl(struct spi_device *spi, uint8_t volt, uint32_t timeout)
+int sx126x_set_dio3_as_tcxo_ctrl(struct spi_device *spi, uint8_t volt, uint32_t timeout)
 {
 	uint8_t cmd[5];
 
@@ -458,8 +459,10 @@ void sx126x_set_dio3_as_tcxo_ctrl(struct spi_device *spi, uint8_t volt, uint32_t
 	cmd[3] = (uint8_t) ((timeout >> 8) & 0xFF);
 	cmd[4] = (uint8_t) (timeout & 0xFF);
 
-	spi_write(spi, cmd, SX126X_SIZE_SET_DIO3_AS_TCXO_CTRL);
+	return spi_write(spi, cmd, SX126X_SIZE_SET_DIO3_AS_TCXO_CTRL);
 }
+
+
 
 void sx126x_set_dio2_as_rfswitch_ctrl(struct spi_device *spi, uint8_t enable)
 {
@@ -541,22 +544,22 @@ uint16_t sx126x_get_irq_status(struct spi_device *spi)
 	uint8_t data[2];
 
 	cmd[0] = SX126X_GET_IRQ_STATUS;
-	cmd[1] = 0;
+	cmd[1] = SX126X_NOP;
 
 	spi_write_then_read(spi, cmd, 2, data, 2);
 
 	return (data[0] << 8) | data[1];
 }
 
-void sx126x_clear_irq_status(struct spi_device *spi, uint16_t irq)
+int sx126x_clear_irq_status(struct spi_device *spi, uint16_t irq)
 {
-	uint8_t cmd[3];
+	uint8_t cmd[SX126X_SIZE_CLR_IRQ_STATUS] = {
+		SX126X_CLR_IRQ_STATUS,
+		(uint8_t) (((uint16_t) irq >> 8) & 0x00FF),
+		(uint8_t) ((uint16_t) irq & 0x00FF)
+	};
 
-	cmd[0] = SX126X_CLR_IRQ_STATUS;
-	cmd[1] = (uint8_t) (((uint16_t) irq >> 8) & 0x00FF);
-	cmd[2] = (uint8_t) ((uint16_t) irq & 0x00FF);
-
-	spi_write(spi, cmd, 3);
+	return spi_write(spi, cmd, SX126X_SIZE_CLR_IRQ_STATUS);
 }
 
 void sx126x_set_rx(struct spi_device *spi, uint32_t timeout)
@@ -687,24 +690,24 @@ void sx126x_set_tx_power(struct spi_device *spi, int8_t dbm)
     spi_write(spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
 }
 
-int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
+int sx126x_set_syncword(struct spi_device *spi, u16 syncword)
 {
 	int status;
     uint8_t buffer[2] = {0x00};
 
-	dev_warn(dev->chardevice, "Setting syncword to 0x%0X\n", syncword);
+	dev_warn(&spi->dev, "Setting syncword to 0x%0X\n", syncword);
 
 	buffer[0] = (syncword & 0xFF00) >> 8;	/* MSB */
 	buffer[1] = (syncword & 0xFF);			/* LSB */
 
-	status = sx126x_write_reg(dev->spi, SX126X_REG_LR_SYNCWORD, buffer, 2);
+	status = sx126x_write_reg(spi, SX126X_REG_LR_SYNCWORD, buffer, 2);
 
     return status;
 }
 
 static int sx126x_set_freq(struct sx126x *dev, u32 freq)
 {
-	uint8_t cmd[5];
+	uint8_t cmd[SX126X_SIZE_SET_RF_FREQUENCY];
 
 	sx126x_calibrate_image(dev->spi, freq);
 
@@ -717,11 +720,27 @@ static int sx126x_set_freq(struct sx126x *dev, u32 freq)
 	cmd[3] = (uint8_t) ((freq >> 8) & 0xFF);
 	cmd[4] = (uint8_t) (freq & 0xFF);
 
-	spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
-
 	dev->_tx_freq = freq;
 
-	return 0;
+	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
+}
+
+int sx126x_set_dio_irq_params(struct sx126x *dev, u16 irq_mask, u16 dio1_mask,
+							 u16 dio2_mask, u16 dio3_mask)
+{
+	uint8_t cmd[SX126X_SIZE_SET_DIO_IRQ_PARAMS] = {
+		SX126X_SET_DIO_IRQ_PARAMS,
+		(uint8_t)(irq_mask >> 8),
+		(uint8_t)(irq_mask >> 0),
+		(uint8_t)(dio1_mask >> 8),
+		(uint8_t)(dio1_mask >> 0),
+		(uint8_t)(dio2_mask >> 8),
+		(uint8_t)(dio2_mask >> 0),
+		(uint8_t)(dio3_mask >> 8),
+		(uint8_t)(dio3_mask >> 0)
+	};
+
+	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_DIO_IRQ_PARAMS);
 }
 
 int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
@@ -738,6 +757,7 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	sx126x_set_stop_rx_timer_on_preamble(data->spi, true);
 
 	sx126x_set_pkt_type(data->spi, SX126X_PKT_TYPE_LORA);
+
 	sx126x_set_lora_symb_num_timeout(data->spi, 0);
 
 	sx126x_set_lora_modulation_params(data->spi, data->_sf, data->_bw, data->_cr, data->_ldro);
@@ -745,7 +765,69 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	sx126x_set_tx_power(data->spi, data->_tx_power);
 
 	// set pkt param
+	sx126x_set_lora_pkt_params(data->spi, 0xFF);
 	return 0;
+}
+
+bool sx126x_enter_rx(struct sx126x *data)
+{
+	bool rv = false;
+
+	if (tx_active == false) {
+
+		sx126x_clear_irq_status(data->spi, SX126X_IRQ_RX_DONE);
+		sx126x_set_dio_irq_params(data,
+						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
+						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
+						SX126X_IRQ_NONE,
+						SX126X_IRQ_NONE);
+
+		sx126x_clear_irq_status(data->spi, SX126X_IRQ_ALL);
+
+		sx126x_set_rx(data->spi, 0xFFFFFF);
+
+		rv = true;
+	} else {
+		rv = false;
+	}
+
+	return rv;
+}
+
+/* ret:
+ *  -1: rx_data_len > pkt_len
+ *  -2: alloc failed
+ *  -3: crc error
+ *  -4: unknown interrupt
+*/
+int sx126x_get_rx_pkt(struct sx126x *data, u8 *pkt, u8 len)
+{
+	int rx_len = 0;
+	uint16_t irq = sx126x_get_irq_status(data->spi);
+
+	if (false == (irq & SX126X_IRQ_CRC_ERR)) {
+
+		if ((irq & SX126X_IRQ_RX_DONE) || (irq & SX126X_IRQ_TIMEOUT)) {
+
+			/* ret:
+			 *  -1: rx_data_len > pkt_len
+			 *  -2: alloc failed
+			*/
+			rx_len = sx126x_read_buf(data->spi, pkt, &len);
+
+		} else {
+
+			rx_len = -4;
+		}
+
+	} else {
+		// crc error
+		rx_len = -3;
+	}
+
+	sx126x_clear_irq_status(data->spi, SX126X_IRQ_RX_DONE | SX126X_IRQ_CRC_ERR | SX126X_IRQ_TIMEOUT);
+
+	return rx_len;
 }
 
 void sx126x_reset(struct sx126x *data)
@@ -808,7 +890,6 @@ static ssize_t sx126x_crc_show(struct device *dev, struct device_attribute *attr
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	u8 config2;
 	int crc;
 
 	mutex_lock(&data->mutex);
@@ -1130,7 +1211,7 @@ static long sx126x_dev_ioctl(struct file *filp, unsigned int cmd,
 			ret = sx126x_set_cr(data, arg);
 			break;
 		case SX126X_IOCTL_CMD_SET_SYNCWORD:
-			ret = sx126x_set_syncword(data, arg & 0xff);
+			ret = sx126x_set_syncword(data->spi, arg & 0xff);
 			break;
 		case SX126X_IOCTL_CMD_GET_SYNCWORD:
 			ret = 0;
@@ -1343,7 +1424,7 @@ static int sx126x_probe(struct spi_device *spi)
 
     sx126x_set_buffer_base_addr(spi, 0, 0);
 
-    sx126x_set_syncword(data, 0x1212);
+    sx126x_set_syncword(spi, 0x1212);
 	///////////////////////////////////////////////////////////
 
 	// get the irq
