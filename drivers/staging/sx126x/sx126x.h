@@ -4,7 +4,6 @@
 #include <linux/types.h>
 
 // SX126X physical layer properties
-#define FREQ_STEP                       0.95367431640625
 
 #define SX126X_PA_CONFIG_SX1261                       0x01
 #define SX126X_PA_CONFIG_SX1262                       0x00
@@ -41,14 +40,14 @@
 #define SX126X_REGULATOR_DC_DC                        0x01	//  7     0                         DC-DC
 
 //SX126X_CMD_SET_DIO3_AS_TCXO_CTRL
-#define SX126X_DIO3_OUTPUT_1_6                        0x00	//  7     0     DIO3 voltage output for TCXO: 1.6 V
-#define SX126X_DIO3_OUTPUT_1_7                        0x01	//  7     0                                   1.7 V
-#define SX126X_DIO3_OUTPUT_1_8                        0x02	//  7     0                                   1.8 V
-#define SX126X_DIO3_OUTPUT_2_2                        0x03	//  7     0                                   2.2 V
-#define SX126X_DIO3_OUTPUT_2_4                        0x04	//  7     0                                   2.4 V
-#define SX126X_DIO3_OUTPUT_2_7                        0x05	//  7     0                                   2.7 V
-#define SX126X_DIO3_OUTPUT_3_0                        0x06	//  7     0                                   3.0 V
-#define SX126X_DIO3_OUTPUT_3_3                        0x07	//  7     0                                   3.3 V
+#define SX126X_DIO3_OUTPUT_1_6                        0x00	//  7     0     DIO3 voltage output for TCXO: 1V6
+#define SX126X_DIO3_OUTPUT_1_7                        0x01	//  7     0                                   1V7
+#define SX126X_DIO3_OUTPUT_1_8                        0x02	//  7     0                                   1V8
+#define SX126X_DIO3_OUTPUT_2_2                        0x03	//  7     0                                   2V2
+#define SX126X_DIO3_OUTPUT_2_4                        0x04	//  7     0                                   2V4
+#define SX126X_DIO3_OUTPUT_2_7                        0x05	//  7     0                                   2V7
+#define SX126X_DIO3_OUTPUT_3_0                        0x06	//  7     0                                   3V0
+#define SX126X_DIO3_OUTPUT_3_3                        0x07	//  7     0                                   3V3
 
 //SX126X_CMD_SET_TX_PARAMS
 #define SX126X_PA_RAMP_10U                            0x00	//  7     0     ramp time: 10 us
@@ -137,7 +136,7 @@
 #define SX126X_IRQ_CRC_ERR                          0b0001000000	//  6     6     wrong CRC received
 #define SX126X_IRQ_HEADER_ERR                       0b0000100000	//  5     5     LoRa header CRC error
 #define SX126X_IRQ_HEADER_VALID                     0b0000010000	//  4     4     valid LoRa header received
-#define SX126X_IRQ_SYNCWORD_VALID                  0b0000001000	//  3     3     valid sync word detected
+#define SX126X_IRQ_SYNCWORD_VALID                  	0b0000001000	//  3     3     valid sync word detected
 #define SX126X_IRQ_PREAMBLE_DETECTED                0b0000000100	//  2     2     preamble detected
 #define SX126X_IRQ_RX_DONE                          0b0000000010	//  1     1     packet received
 #define SX126X_IRQ_TX_DONE                          0b0000000001	//  0     0     packet transmission completed
@@ -199,10 +198,8 @@ struct sx126x_pkt {
 	size_t hdrlen;
 	size_t payloadlen;
 
-	__s16 snr;
-	__s16 rssi;
-	__u32 fei;
-	__u8 crcfail;
+	int rssi;
+	int crcfail;
 } __attribute__((packed));
 
 #endif
