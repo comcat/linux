@@ -204,8 +204,62 @@ struct sx126x {
 static LIST_HEAD(device_list);
 static DEFINE_MUTEX(device_list_lock);
 
+/* Internal frequency of the radio */
+#define SX126X_XTAL_FREQ					32000000UL
+
+/* Internal frequency of the radio */
+#define SX126X_RTC_FREQ_IN_HZ				64000UL
+
+/* Scaling factor used to perform fixed-point operations */
+#define SX126X_PLL_STEP_SHIFT_AMOUNT		14
+
+/* PLL step - scaled with SX126X_PLL_STEP_SHIFT_AMOUNT */
+#define SX126X_PLL_STEP_SCALED (SX126X_XTAL_FREQ >> (25 - SX126X_PLL_STEP_SHIFT_AMOUNT))
+
+uint32_t sx126x_convert_freq_to_pll_step(uint32_t freq_in_hz)
+{
+    uint32_t steps_int;
+    uint32_t steps_frac;
+
+    // Get integer and fractional parts of the frequency computed with a PLL step scaled value
+    steps_int  = freq_in_hz / SX126X_PLL_STEP_SCALED;
+    steps_frac = freq_in_hz - (steps_int * SX126X_PLL_STEP_SCALED);
+
+    // Apply the scaling factor to retrieve a frequency in Hz (+ ceiling)
+    return (steps_int << SX126X_PLL_STEP_SHIFT_AMOUNT) +
+           ((( steps_frac << SX126X_PLL_STEP_SHIFT_AMOUNT) + (SX126X_PLL_STEP_SCALED >> 1)) /
+             SX126X_PLL_STEP_SCALED);
+}
+
+uint32_t sx126x_convert_timeout_to_rtc_step(uint32_t timeout_in_ms)
+{
+    return (uint32_t)(timeout_in_ms * (SX126X_RTC_FREQ_IN_HZ / 1000));
+}
+
+int sx126x_set_standby(struct sx126x *dev, uint8_t cfg);
+
+void sx126x_wait_on_busy(struct sx126x *dev)
+{
+	int val = -1;
+	u32 cnt_10us = 0;
+    do
+    {
+        val = gpiod_get_value(dev->gpio_busy);
+		udelay(10);
+		cnt_10us++;
+
+    } while(1 == val && cnt_10us < 100000);
+
+	if (cnt_10us >= 100000) {
+		/* 1s */
+		dev_info(&dev->spi->dev, "wait on busy timeout 1000ms! \n");
+
+		sx126x_set_standby(dev, SX126X_STANDBY_RC);
+	}
+}
+
 /* sx126x register and buffer api */
-static int sx126x_read_reg(struct spi_device *spi, u16 reg, u8 *result, size_t len)
+static int sx126x_read_reg(struct sx126x *dev, u16 reg, u8 *result, size_t len)
 {
 	u8 cmd[3];
 	int ret;
@@ -214,13 +268,14 @@ static int sx126x_read_reg(struct spi_device *spi, u16 reg, u8 *result, size_t l
 	cmd[1] = (reg >> 8) & 0xff;
 	cmd[2] = reg & 0xff;
 
-	ret = spi_write_then_read(spi, cmd, 3, result, len);
+	sx126x_wait_on_busy(dev);
+	ret = spi_write_then_read(dev->spi, cmd, 3, result, len);
 
-	dev_dbg(&spi->dev, "read: @%02x %02x\n", reg, *result);
+	dev_dbg(&dev->spi->dev, "read: @%02x %02x\n", reg, *result);
 	return ret;
 }
 
-static int sx126x_write_reg(struct spi_device *spi, u16 reg, u8 *value, size_t len)
+static int sx126x_write_reg(struct sx126x *dev, u16 reg, u8 *value, size_t len)
 {
 	u8 cmd[SX126X_SIZE_WRITE_REGISTER];
 	int ret = 0;
@@ -234,13 +289,32 @@ static int sx126x_write_reg(struct spi_device *spi, u16 reg, u8 *value, size_t l
 	cmd[1] = (reg >> 8) & 0xff;
 	cmd[2] = reg & 0xff;
 
-	//dev_info(&spi->dev, "reg write: %d\n", len);
+	//dev_info(&dev->spi->dev, "reg write: %d\n", len);
 	//print_hex_dump(KERN_DEBUG, NULL, DUMP_PREFIX_NONE, 16, 1, value, len, true);
 
-	spi_sync_transfer(spi, fifotransfers, ARRAY_SIZE(fifotransfers));
+	sx126x_wait_on_busy(dev);
+	spi_sync_transfer(dev->spi, fifotransfers, ARRAY_SIZE(fifotransfers));
 
-	//ret = spi_write(spi, ptx, 4);
-	dev_dbg(&spi->dev, "write: @%02x %02x\n", reg, value[0]);
+	dev_dbg(&dev->spi->dev, "write: @%02x %02x\n", reg, value[0]);
+
+	return ret;
+}
+
+/* used by RX done */
+int sx126x_stop_rtc(struct sx126x *dev)
+{
+	int ret = 0;
+	u8 reg_val = 0;
+	ret = sx126x_write_reg(dev, SX126X_REG_RTC_CTRL, &reg_val, 1);
+
+	if (0 == ret) {
+		ret = sx126x_read_reg(dev, SX126X_REG_EVT_CLR, &reg_val, 1);
+
+		if (0 == ret) {
+			reg_val |= SX126X_REG_EVT_CLR_TIMEOUT_MASK;
+			ret = sx126x_write_reg(dev, SX126X_REG_EVT_CLR, &reg_val, 1);
+		}
+	}
 
 	return ret;
 }
@@ -251,6 +325,7 @@ static int sx126x_get_rxbuf_status(struct sx126x *dev, uint8_t *plen, uint8_t *r
 	uint8_t buf[2] = {0};
 	int ret = 0;
 
+	sx126x_wait_on_busy(dev);
 	ret = spi_write_then_read(dev->spi, cmd, 2, buf, 2);
 
 	*plen = buf[0];
@@ -282,6 +357,7 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 
 			dev_warn(&(dev->spi->dev), "FIFO read: %02x from %02x\n", readlen, fifoaddr);
 
+			sx126x_wait_on_busy(dev);
 			ret = spi_write_then_read(dev->spi, &ptx, 3, buffer + off, readlen);
 
 			if (ret) {
@@ -343,6 +419,7 @@ static int sx126x_get_rssi_inst(struct sx126x *dev, int16_t *rssi)
         SX126X_NOP,
     };
 
+	sx126x_wait_on_busy(dev);
 	ret = spi_write_then_read(dev->spi, cmd, 2, &buf, 1);
 
 	*rssi = -buf >> 1;
@@ -361,6 +438,7 @@ static int sx126x_get_lora_stats(struct sx126x *dev, u16 *nb_pkt_rx, u16 *nb_pkt
     uint8_t buf[6] = { 0 };
 	int ret = 0;
 
+	sx126x_wait_on_busy(dev);
 	ret = spi_write_then_read(spi, cmd, SX126X_SIZE_GET_STATS, &buf, 6);
 
 	*nb_pkt_rx = (buf[0] << 8) | buf[1];
@@ -382,6 +460,7 @@ static int sx126x_reset_stats(struct sx126x *dev)
 		SX126X_NOP
     };
 
+	sx126x_wait_on_busy(dev);
 	/* resets the value read by the command GetStats */
 	return spi_write(dev->spi, cmd, SX126X_SIZE_RESET_STATS);
 }
@@ -394,15 +473,16 @@ static int sx126x_reset_stats(struct sx126x *dev)
  *   bpsk: 0x2
  *   lr_fhss: 0x3
 */ 
-uint8_t sx126x_get_pkt_type(struct spi_device *spi)
+uint8_t sx126x_get_pkt_type(struct sx126x *dev)
 {
-	uint8_t cmd[2];
-	uint8_t rv = 0; 
+	uint8_t cmd[SX126X_SIZE_GET_PKT_TYPE];
+	uint8_t rv = 9; 
 
 	cmd[0] = SX126X_GET_PKT_TYPE;
-	cmd[1] = 0;
+	cmd[1] = SX126X_NOP;
 
-	spi_write_then_read(spi, cmd, 2, &rv, 1);
+	sx126x_wait_on_busy(dev);
+	spi_write_then_read(dev->spi, cmd, SX126X_SIZE_GET_PKT_TYPE, &rv, 1);
 
 	return rv;
 }
@@ -414,6 +494,7 @@ int sx126x_set_pkt_type(struct sx126x *dev, uint8_t pkt_t)
 	cmd[0] = SX126X_SET_PKT_TYPE;
 	cmd[1] = pkt_t;
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_PKT_TYPE);
 }
 
@@ -438,15 +519,16 @@ int sx126x_set_lora_pkt_params(struct sx126x *dev, size_t pkt_len)
     cmd[5] = 0x01;   /* crc on */
     cmd[6] = 0x00;   /* standard iq, no inverted iq */
 
+	sx126x_wait_on_busy(dev);
 	ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_PKT_PARAMS_LORA);
 
 	// WORKAROUND - Optimizing the Inverted IQ Operation, see datasheet DS_SX1261-2_V1.2 15.4
 	if (0 == ret) {
-		ret = sx126x_read_reg(dev->spi, SX126X_REG_IQ_POLARITY, &reg_val, 1);
+		ret = sx126x_read_reg(dev, SX126X_REG_IQ_POLARITY, &reg_val, 1);
 		if (ret == 0) {
 			reg_val |= (1 << 2);	/* bit 2 set to 1 when using standard IQ polarity */
 			//reg_val &= ~( 1 << 2 );  // Bit 2 set to 0 when using inverted IQ polarity
-			ret = sx126x_write_reg(dev->spi, SX126X_REG_IQ_POLARITY, &reg_val, 1);
+			ret = sx126x_write_reg(dev, SX126X_REG_IQ_POLARITY, &reg_val, 1);
 		}
 	}
     // WORKAROUND END
@@ -461,6 +543,7 @@ int sx126x_set_stop_rx_timer_on_preamble(struct sx126x *dev, bool enable)
 	cmd[0] = SX126X_SET_STOP_TIMER_ON_PREAMBLE;
 	cmd[1] = enable;
 	
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_STOP_TIMER_ON_PREAMBLE);
 }
 
@@ -471,6 +554,7 @@ int sx126x_set_lora_symb_num_timeout(struct sx126x *dev, uint8_t symb_num)
 	cmd[0] = SX126X_SET_LORA_SYMB_NUM_TIMEOUT;
 	cmd[1] = symb_num;
 	
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_LORA_SYMB_NUM_TIMEOUT);
 }
 
@@ -489,6 +573,7 @@ int sx126x_config_dio_irq(struct sx126x *dev, uint16_t irq_mask, uint16_t dio1_m
 	cmd[7] = (uint8_t) ((dio3_mask >> 8) & 0x00FF);
 	cmd[8] = (uint8_t) (dio3_mask & 0x00FF);
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_DIO_IRQ_PARAMS);
 }
 
@@ -502,6 +587,7 @@ int sx126x_set_dio3_as_tcxo_ctrl(struct sx126x *dev, uint8_t volt, uint32_t time
 	cmd[3] = (uint8_t) ((timeout >> 8) & 0xFF);
 	cmd[4] = (uint8_t) (timeout & 0xFF);
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_DIO3_AS_TCXO_CTRL);
 }
 
@@ -514,6 +600,7 @@ int sx126x_set_dio2_as_rfswitch_ctrl(struct sx126x *dev, uint8_t enable)
 	cmd[0] = SX126X_SET_DIO2_AS_RF_SWITCH_CTRL;
 	cmd[1] = enable;
 	
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_DIO2_AS_RF_SWITCH_CTRL);
 }
 
@@ -521,7 +608,7 @@ static int sx126x_lora_tx_modulation_workaround(struct sx126x *dev, u8 bw)
 {
     uint8_t reg_value = 0;
 
-    int status = sx126x_read_reg(dev->spi, SX126X_REG_TX_MODULATION, &reg_value, 1);
+    int status = sx126x_read_reg(dev, SX126X_REG_TX_MODULATION, &reg_value, 1);
 
     if(status == 0) {
 
@@ -531,7 +618,7 @@ static int sx126x_lora_tx_modulation_workaround(struct sx126x *dev, u8 bw)
 			reg_value |= ( 1 << 2 );  // Bit 2 set to 1 for any other LoRa BW
 		}
 
-        status = sx126x_write_reg(dev->spi, SX126X_REG_TX_MODULATION, &reg_value, 1);
+        status = sx126x_write_reg(dev, SX126X_REG_TX_MODULATION, &reg_value, 1);
     }
     return status;
 }
@@ -547,6 +634,7 @@ static int sx126x_set_lora_modulation_params(struct sx126x *dev, int8_t sf, uint
 	cmd[3] = cr;
 	cmd[4] = ldro & 0x01;
 
+	sx126x_wait_on_busy(dev);
 	ret = spi_write(dev->spi, cmd, 5);
 
     if(ret == 0) {
@@ -575,7 +663,7 @@ static int sx126x_set_lora_modulation_params(struct sx126x *dev, int8_t sf, uint
  * ASR6500: 0x22
  * SX126x: 0x2A
  */ 
-uint8_t sx126x_get_status(struct sx126x *dev)
+int sx126x_get_status(struct sx126x *dev)
 {
     u8 cmd[SX126X_SIZE_GET_STATUS] = {
         SX126X_GET_STATUS,
@@ -583,6 +671,7 @@ uint8_t sx126x_get_status(struct sx126x *dev)
 	u8 rv = 0xff;
     int ret = 0;
 
+	sx126x_wait_on_busy(dev);
     ret = spi_write_then_read(dev->spi, cmd, SX126X_SIZE_GET_STATUS, &rv, 1);
 
 	if (ret == 0) {
@@ -590,6 +679,33 @@ uint8_t sx126x_get_status(struct sx126x *dev)
     } else {
 		return -1;
 	}
+}
+
+/*
+ * cfg: STDBY_RC or STDBY_XOSC
+ *   SX126X_STANDBY_XOSC
+ *   SX126X_STANDBY_RC
+ */
+int sx126x_set_standby(struct sx126x *dev, uint8_t cfg)
+{
+	u8 cmd[SX126X_SIZE_SET_STANDBY] = {
+		SX126X_SET_STANDBY,
+		cfg
+	};
+
+	sx126x_wait_on_busy(dev);
+	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_STANDBY);
+}
+
+int sx126x_set_sleep(struct sx126x *dev, uint8_t cfg)
+{
+	u8 cmd[SX126X_SIZE_SET_SLEEP] = {
+		SX126X_SET_SLEEP,
+		cfg
+	};
+
+	sx126x_wait_on_busy(dev);
+	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_SLEEP);
 }
 
 uint16_t sx126x_get_irq_status(struct sx126x *dev)
@@ -600,6 +716,7 @@ uint16_t sx126x_get_irq_status(struct sx126x *dev)
 	cmd[0] = SX126X_GET_IRQ_STATUS;
 	cmd[1] = SX126X_NOP;
 
+	sx126x_wait_on_busy(dev);
 	spi_write_then_read(dev->spi, cmd, 2, data, 2);
 
 	return (data[0] << 8) | data[1];
@@ -613,6 +730,7 @@ int sx126x_clear_irq_status(struct sx126x *dev, uint16_t irq)
 		(uint8_t) ((uint16_t) irq & 0x00FF)
 	};
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_CLR_IRQ_STATUS);
 }
 
@@ -634,23 +752,24 @@ int sx126x_set_rx(struct sx126x *dev, uint32_t timeout)
 	cmd[2] = (uint8_t) ((timeout >> 8) & 0xFF);
 	cmd[3] = (uint8_t) (timeout & 0xFF);
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
 }
 
-#if 0
 int sx126x_set_tx(struct sx126x *dev, uint32_t timeout_ms)
 {
 	uint8_t cmd[SX126X_SIZE_SET_TX];
-	uint32_t tout = (uint32_t) (timeout_ms / 0.015625);
+	//uint32_t tout = (uint32_t) (timeout_ms / 0.015625);
+	uint32_t tout = sx126x_convert_timeout_to_rtc_step(timeout_ms);
 
 	cmd[0] = SX126X_SET_TX;
 	cmd[1] = (uint8_t) ((tout >> 16) & 0xFF);
 	cmd[2] = (uint8_t) ((tout >> 8) & 0xFF);
 	cmd[3] = (uint8_t) (tout & 0xFF);
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX);
 }
-#endif
 
 int sx126x_set_pa_config(struct sx126x *dev, u8 duty_cycle, u8 hp_max,
 							u8 dev_sel, u8 lut)
@@ -663,12 +782,13 @@ int sx126x_set_pa_config(struct sx126x *dev, u8 duty_cycle, u8 hp_max,
 	cmd[3] = dev_sel;
 	cmd[4] = lut;
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_PA_CFG);
 }
 
 int sx126x_set_over_current_protect(struct sx126x *dev, uint8_t value)
 {
-	return sx126x_write_reg(dev->spi, SX126X_REG_OCP, &value, 1);
+	return sx126x_write_reg(dev, SX126X_REG_OCP, &value, 1);
 }
 
 int sx126x_calibrate(struct sx126x *dev, uint8_t calib_param)
@@ -678,32 +798,36 @@ int sx126x_calibrate(struct sx126x *dev, uint8_t calib_param)
 	cmd[0] = SX126X_CALIBRATE;
 	cmd[1] = calib_param;
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_CALIBRATE);
 }
 
-int sx126x_calibrate_image(struct sx126x *dev, uint64_t frequency)
+int sx126x_calibrate_image(struct sx126x *dev, uint32_t freq)
 {
 	u8 cmd[3] = {0};
 
 	cmd[0] = SX126X_CALIBRATE_IMAGE;
 
-	//if (frequency > 900000000) {
-	//	cal_freq[0] = 0xE1;
-	//	cal_freq[1] = 0xE9;
-	//} else if (frequency > 850000000) {
-	//	cal_freq[0] = 0xD7;
-	//	cal_freq[1] = 0xD8;
-	//} else if (frequency > 770000000) {
-	//	cal_freq[0] = 0xC1;
-	//	cal_freq[1] = 0xC5;
-	if (frequency > 460000000) {
+	#if 0
+	if (freq > 900000000) {
+		cmd[1] = 0xE1;
+		cmd[2] = 0xE9;
+	} else if (freq > 850000000) {
+		cmd[1] = 0xD7;
+		cmd[2] = 0xD8;
+	} else if (freq > 770000000) {
+		cmd[1] = 0xC1;
+		cmd[2] = 0xC5;
+	#endif
+	if (freq >= 470000000 && freq <= 510000000) {
 		cmd[1] = 0x75;
 		cmd[2] = 0x81;
-	} else if (frequency > 425000000) {
+	} else if (freq >= 430000000 && freq <= 440000000) {
 		cmd[1] = 0x6B;
 		cmd[2] = 0x6F;
 	}
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_CALIBRATE_IMAGE);
 }
 
@@ -714,6 +838,7 @@ int sx126x_set_regulator_mode(struct sx126x *dev, uint8_t mode)
 	cmd[0] = SX126X_SET_REGULATOR_MODE;
 	cmd[1] = mode;
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_REGULATOR_MODE);
 }
 
@@ -725,6 +850,7 @@ int sx126x_set_buffer_base_addr(struct sx126x *dev, uint8_t tx_addr, uint8_t rx_
 	cmd[1] = tx_addr;
 	cmd[2] = rx_addr;
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_BUFFER_BASE_ADDRESS);
 }
 
@@ -753,6 +879,7 @@ void sx126x_set_tx_power(struct sx126x *dev, int8_t dbm)
 	cmd[2] = SX126X_PA_RAMP_200U;				// TCXO
     // cmd[2] = RADIO_RAMP_20_US;				// XTAL
 
+	sx126x_wait_on_busy(dev);
     spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
 }
 
@@ -766,12 +893,12 @@ int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
 	buffer[0] = (syncword & 0xFF00) >> 8;	/* MSB */
 	buffer[1] = (syncword & 0xFF);			/* LSB */
 
-	status = sx126x_write_reg(dev->spi, SX126X_REG_LR_SYNCWORD, buffer, 2);
+	status = sx126x_write_reg(dev, SX126X_REG_LR_SYNCWORD, buffer, 2);
 
     return status;
 }
 
-static int sx126x_set_freq(struct sx126x *dev, u64 freq)
+static int sx126x_set_freq(struct sx126x *dev, u32 freq)
 {
 	uint8_t cmd[SX126X_SIZE_SET_RF_FREQUENCY];
 
@@ -779,9 +906,9 @@ static int sx126x_set_freq(struct sx126x *dev, u64 freq)
 
 	dev->_tx_freq = freq;
 
-	freq *= dev->fosc;
-
-	do_div(freq, 33554432);
+	//freq *= 33554432;;
+	//do_div(freq, dev->fosc);
+	freq = sx126x_convert_freq_to_pll_step(freq);
 
 	cmd[0] = SX126X_SET_RF_FREQUENCY;
 	cmd[1] = (uint8_t) ((freq >> 24) & 0xFF);
@@ -789,7 +916,7 @@ static int sx126x_set_freq(struct sx126x *dev, u64 freq)
 	cmd[3] = (uint8_t) ((freq >> 8) & 0xFF);
 	cmd[4] = (uint8_t) (freq & 0xFF);
 
-
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
 }
 
@@ -808,6 +935,7 @@ int sx126x_set_dio_irq_params(struct sx126x *dev, u16 irq_mask, u16 dio1_mask,
 		(uint8_t)(dio3_mask >> 0)
 	};
 
+	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_DIO_IRQ_PARAMS);
 }
 
@@ -823,13 +951,18 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 
 	data->_tx_power = 22;
 
-	ret = sx126x_set_stop_rx_timer_on_preamble(data, true);
-	if (ret != 0)
-		dev_warn(&(data->spi->dev), "set top rx timer failed %d\n", ret);
+	sx126x_set_standby(data, SX126X_STANDBY_RC);
+	printk("status = 0x%x\n", sx126x_get_status(data));
 
 	ret = sx126x_set_pkt_type(data, SX126X_PKT_TYPE_LORA);
 	if (ret != 0)
 		dev_warn(&(data->spi->dev), "set pkt type failed %d\n", ret);
+	else
+		dev_info(&(data->spi->dev), "pkt type = 0x%X\n", sx126x_get_pkt_type(data));
+
+	ret = sx126x_set_stop_rx_timer_on_preamble(data, true);
+	if (ret != 0)
+		dev_warn(&(data->spi->dev), "set top rx timer failed %d\n", ret);
 
 	ret = sx126x_set_lora_symb_num_timeout(data, 0);
 	if (ret != 0)
@@ -859,7 +992,6 @@ bool sx126x_enter_rx(struct sx126x *data)
 
 	if (tx_active == false) {
 
-		sx126x_clear_irq_status(data, SX126X_IRQ_RX_DONE);
 		sx126x_set_dio_irq_params(data,
 						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
 						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
@@ -931,11 +1063,11 @@ void sx126x_reset(struct sx126x *data)
 int sx126x_cfg_tx_clamp(struct sx126x *data)
 {
 	u8 reg_val = 0;
-	int ret = sx126x_read_reg(data->spi, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
+	int ret = sx126x_read_reg(data, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
 	if (0 == ret) {
 		//reg_val |= SX126X_REG_TX_CLAMP_CFG_MASK;
 		reg_val |= 0x1E;
-		ret = sx126x_write_reg(data->spi, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
+		ret = sx126x_write_reg(data, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
 	}
 
 	return ret;
@@ -963,9 +1095,9 @@ static int sx126x_set_crc(struct sx126x *data, bool crc)
 {
 	dev_warn(data->chardevice, "Setting crc to %d\n", crc);
 
-	//sx126x_read_reg(data->spi, SX126X_REG_LORA_MODEMCONFIG2, &reg);
+	//sx126x_read_reg(data, SX126X_REG_LORA_MODEMCONFIG2, &reg);
 
-	//sx126x_write_reg(data->spi, SX126X_REG_LORA_MODEMCONFIG2, reg);
+	//sx126x_write_reg(data, SX126X_REG_LORA_MODEMCONFIG2, reg);
 
 	return 0;
 }
@@ -1050,7 +1182,6 @@ static ssize_t sx126x_sf_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	int sf;
 
 	return sprintf(buf, "%d\n", data->_sf);
 }
@@ -1091,7 +1222,7 @@ static ssize_t sx126x_bw_show(struct device *dev, struct device_attribute *attr,
 
 	mutex_lock(&data->mutex);
 
-	//sx126x_read_reg(data->spi, SX126X_REG_LORA_MODEMCONFIG1, &config1);
+	//sx126x_read_reg(data, SX126X_REG_LORA_MODEMCONFIG1, &config1);
 	//bw = config1 >> SX126X_REG_LORA_MODEMCONFIG1_BW_SHIFT;
 
 	sprintf(buf, "%d\n", bwmap[bw]);
@@ -1455,6 +1586,9 @@ static int sx126x_probe(struct spi_device *spi)
 	if (IS_ERR(data->gpio_busy)) {
 		dev_warn(&spi->dev, "NO BUSY enable\n");
 		data->gpio_busy = NULL;
+	} else {
+		gpiod_direction_input(data->gpio_busy);
+		dev_info(&spi->dev, "Set busy pin as input\n");
 	}
 
 	// get the reset gpio and reset the chip
@@ -1471,6 +1605,8 @@ static int sx126x_probe(struct spi_device *spi)
 		 *  gpio_set(1) is LOW
 		 *  gpio_set(0) is HIGH
 		*/
+		//gpiod_direction_output(data->gpio_reset, 1);
+
 		gpiod_set_value(data->gpio_reset, 1);
 		mdelay(100);
 		gpiod_set_value(data->gpio_reset, 0);
@@ -1482,16 +1618,25 @@ static int sx126x_probe(struct spi_device *spi)
 	if (0x2a != sx126x_get_status(data)) {
 		dev_err(&spi->dev, "sx126x status error, maybe no spi connection");
 	} else {
+
+		sx126x_set_standby(data, SX126X_STANDBY_RC);
 		printk("status = 0x%x\n", sx126x_get_status(data));
 	}
 
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	///////////////////////////////////////////////////////////
 	/* setup the basic lora cfg */
 	sx126x_workaround_ant_mismatch(data);
 
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
+
 	sx126x_set_regulator_mode(data, SX126X_REGULATOR_DC_DC);
 
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
+
 	sx126x_set_dio3_as_tcxo_ctrl(data, SX126X_DIO3_OUTPUT_1_8, RADIO_TCXO_SETUP_TIME << 6);
+
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 
 	sx126x_calibrate(data, SX126X_CALIBRATE_IMAGE_ON
 		| SX126X_CALIBRATE_ADC_BULK_P_ON
@@ -1500,11 +1645,19 @@ static int sx126x_probe(struct spi_device *spi)
 		| SX126X_CALIBRATE_PLL_ON
 		| SX126X_CALIBRATE_RC13M_ON | SX126X_CALIBRATE_RC64K_ON);
 
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
+
     sx126x_set_dio2_as_rfswitch_ctrl(data, true);
+
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 
     sx126x_set_buffer_base_addr(data, 0, 0);
 
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
+
     sx126x_set_syncword(data, 0x1212);
+
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	///////////////////////////////////////////////////////////
 
 	// get the irq
@@ -1551,8 +1704,11 @@ static int sx126x_probe(struct spi_device *spi)
 
 	/////////////////////////
 	//for test
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	sx126x_setup_v0(data, 472500000);
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	sx126x_enter_rx(data);
+	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 
 	return 0;
 

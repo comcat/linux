@@ -32,6 +32,16 @@
 #define SX126X_PKT_TYPE_BPSK						0x02
 #define SX126X_PKT_TYPE_LR_FHSS						0x03
 
+//SX126X_CMD_SET_SLEEP
+#define SX126X_SLEEP_START_COLD                       0b00000000	//  2     2     sleep mode: cold start, configuration is lost (default)
+#define SX126X_SLEEP_START_WARM                       0b00000100	//  2     2                 warm start, configuration is retained
+#define SX126X_SLEEP_RTC_OFF                          0b00000000	//  0     0     wake on RTC timeout: disabled
+#define SX126X_SLEEP_RTC_ON                           0b00000001	//  0     0                          enabled
+
+//SX126X_CMD_SET_STANDBY
+#define SX126X_STANDBY_RC                             0x00	//  7     0     standby mode: 13 MHz RC oscillator
+#define SX126X_STANDBY_XOSC                           0x01	//  7     0                   32 MHz crystal oscillator
+
 //Radio complete Wake-up Time with TCXO stabilisation time
 #define RADIO_TCXO_SETUP_TIME                         5	// [ms]
 
