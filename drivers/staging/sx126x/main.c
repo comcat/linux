@@ -261,15 +261,16 @@ void sx126x_wait_on_busy(struct sx126x *dev)
 /* sx126x register and buffer api */
 static int sx126x_read_reg(struct sx126x *dev, u16 reg, u8 *result, size_t len)
 {
-	u8 cmd[3];
 	int ret;
+	u8 cmd[SX126X_SIZE_READ_REGISTER];
 
 	cmd[0] = SX126X_READ_REGISTER;
-	cmd[1] = (reg >> 8) & 0xff;
-	cmd[2] = reg & 0xff;
+	cmd[1] = (uint8_t) (reg >> 8);
+	cmd[2] = (uint8_t) reg;
+	cmd[3] = SX126X_NOP;
 
 	sx126x_wait_on_busy(dev);
-	ret = spi_write_then_read(dev->spi, cmd, 3, result, len);
+	ret = spi_write_then_read(dev->spi, cmd, SX126X_SIZE_READ_REGISTER, result, len);
 
 	dev_dbg(&dev->spi->dev, "read: @%02x %02x\n", reg, *result);
 	return ret;
@@ -338,7 +339,7 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 {
 	u8 pktstart, rxbytes, off, fifoaddr;
 	u8 ptx[3];
-	int ret;
+	int ret = -1;
 	unsigned readlen;
 
 	size_t maxtransfer = spi_max_transfer_size(dev->spi);
@@ -883,19 +884,31 @@ void sx126x_set_tx_power(struct sx126x *dev, int8_t dbm)
     spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
 }
 
-int sx126x_set_syncword(struct sx126x *dev, u16 syncword)
+int sx126x_set_syncword(struct sx126x *dev, u8 syncword)
 {
-	int status;
     uint8_t buffer[2] = {0x00};
+    uint8_t cmd[2] = {0x00};
 
-	dev_warn(&(dev->spi->dev), "Setting syncword to 0x%0X\n", syncword);
+	int ret = sx126x_read_reg(dev, SX126X_REG_LR_SYNCWORD, buffer, 2);
 
-	buffer[0] = (syncword & 0xFF00) >> 8;	/* MSB */
-	buffer[1] = (syncword & 0xFF);			/* LSB */
+	/* reset val: 0x14 0x24 */
+	dev_warn(&(dev->spi->dev), "syncword: 0x%0X 0x%0X\n", buffer[0], buffer[1]);
 
-	status = sx126x_write_reg(dev, SX126X_REG_LR_SYNCWORD, buffer, 2);
+	if (ret >= 0) {
+        //buffer[0] = (buffer[0] & ~0xF0) + (syncword & 0xF0);
+        //buffer[1] = (buffer[1] & ~0xF0) + ((syncword & 0x0F) << 4);
+		buffer[0] = syncword;
+		buffer[1] = syncword;
 
-    return status;
+		ret = sx126x_write_reg(dev, SX126X_REG_LR_SYNCWORD, buffer, 2);
+
+		dev_warn(&(dev->spi->dev), "Setting syncword to 0x%0X 0x%0X\n", buffer[0], buffer[1]);
+	}
+
+	sx126x_read_reg(dev, SX126X_REG_LR_SYNCWORD, cmd, 2);
+	dev_warn(&dev->spi->dev, "Read syncword: 0x%0X 0x%0X\n", cmd[0], cmd[1]);
+
+    return ret;
 }
 
 static int sx126x_set_freq(struct sx126x *dev, u32 freq)
@@ -1064,7 +1077,7 @@ int sx126x_cfg_tx_clamp(struct sx126x *data)
 {
 	u8 reg_val = 0;
 	int ret = sx126x_read_reg(data, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
-	if (0 == ret) {
+	if (ret >= 0) {
 		//reg_val |= SX126X_REG_TX_CLAMP_CFG_MASK;
 		reg_val |= 0x1E;
 		ret = sx126x_write_reg(data, SX126X_REG_TX_CLAMP_CFG, &reg_val, 1);
@@ -1106,13 +1119,12 @@ static ssize_t sx126x_crc_show(struct device *dev, struct device_attribute *attr
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	int crc;
 
 	mutex_lock(&data->mutex);
 
 	mutex_unlock(&data->mutex);
 
-	return sprintf(buf, "%d\n", crc & 0x1);
+	return sprintf(buf, "%d\n", 0x1);
 }
 
 static ssize_t sx126x_crc_store(struct device *dev,
@@ -1217,18 +1229,14 @@ static ssize_t sx126x_bw_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	//uint8_t config1;
-	int bw, ret = 0;
+	int bw = 4;
 
 	mutex_lock(&data->mutex);
-
-	//sx126x_read_reg(data, SX126X_REG_LORA_MODEMCONFIG1, &config1);
-	//bw = config1 >> SX126X_REG_LORA_MODEMCONFIG1_BW_SHIFT;
 
 	sprintf(buf, "%d\n", bwmap[bw]);
 
 	mutex_unlock(&data->mutex);
-	return ret;
+	return 0;
 }
 
 static int sx126x_set_bw(struct sx126x *data, unsigned bw){
@@ -1520,6 +1528,10 @@ static void sx126x_irq_handler(struct work_struct *work)
 			dev_info(data->chardevice,
 				 "CAD done, nothing detected\n");
 		}
+	} else if (irqflags & SX126X_IRQ_TIMEOUT) {
+
+		dev_info(data->chardevice,
+			 "Tx or Rx timeout\n");
 
 	} else {
 		dev_err(&data->spi->dev,
@@ -1655,7 +1667,7 @@ static int sx126x_probe(struct spi_device *spi)
 
 	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 
-    sx126x_set_syncword(data, 0x1212);
+    sx126x_set_syncword(data, 0x12);
 
 	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	///////////////////////////////////////////////////////////
