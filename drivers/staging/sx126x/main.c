@@ -337,26 +337,27 @@ static int sx126x_get_rxbuf_status(struct sx126x *dev, uint8_t *plen, uint8_t *r
 
 static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 {
-	u8 pktstart, rxbytes, off, fifoaddr;
+	u8 pktstart, rx_len, off, fifoaddr;
 	u8 ptx[3];
 	int ret = -1;
 	unsigned readlen;
 
 	size_t maxtransfer = spi_max_transfer_size(dev->spi);
 
-	sx126x_get_rxbuf_status(dev, &rxbytes, &pktstart);
+	sx126x_get_rxbuf_status(dev, &rx_len, &pktstart);
 
-	if (rxbytes < MAX_PAYLOAD_LEN) {
+	if (rx_len < MAX_PAYLOAD_LEN) {
 		/* buffer is ok */
-		for (off = 0; off < rxbytes; off += maxtransfer) {
-			readlen = min(maxtransfer, (size_t)(rxbytes - off));
+		for (off = 0; off < rx_len; off += maxtransfer) {
+
+			readlen = min(maxtransfer, (size_t)(rx_len - off));
 			fifoaddr = pktstart + off;
 
 			ptx[0] = SX126X_READ_BUFFER;
 			ptx[1] = fifoaddr;								/* offset */
 			ptx[2] = SX126X_NOP;
 
-			dev_warn(&(dev->spi->dev), "FIFO read: %02x from %02x\n", readlen, fifoaddr);
+			dev_warn(&(dev->spi->dev), "FIFO read: %d from 0x%02x\n", readlen, fifoaddr);
 
 			sx126x_wait_on_busy(dev);
 			ret = spi_write_then_read(dev->spi, &ptx, 3, buffer + off, readlen);
@@ -367,10 +368,10 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 		}
 	}
 
-	/* do not read the buffer when rxbytes is greater than MAX_PAYLOAD_LEN */
-	*len = rxbytes;
+	/* do not read the buffer when rx_len is greater than MAX_PAYLOAD_LEN */
+	*len = rx_len;
 
-	//print_hex_dump_bytes("", DUMP_PREFIX_NONE, buffer, rxbytes);
+	//print_hex_dump_bytes("", DUMP_PREFIX_NONE, buffer, rx_len);
 
 	return ret;
 }
@@ -895,10 +896,13 @@ int sx126x_set_syncword(struct sx126x *dev, u8 syncword)
 	dev_warn(&(dev->spi->dev), "syncword: 0x%0X 0x%0X\n", buffer[0], buffer[1]);
 
 	if (ret >= 0) {
-        //buffer[0] = (buffer[0] & ~0xF0) + (syncword & 0xF0);
-        //buffer[1] = (buffer[1] & ~0xF0) + ((syncword & 0x0F) << 4);
+	#if 0
+        buffer[0] = (buffer[0] & ~0xF0) + (syncword & 0xF0);
+        buffer[1] = (buffer[1] & ~0xF0) + ((syncword & 0x0F) << 4);
+	#else
 		buffer[0] = syncword;
 		buffer[1] = syncword;
+	#endif
 
 		ret = sx126x_write_reg(dev, SX126X_REG_LR_SYNCWORD, buffer, 2);
 
@@ -1479,9 +1483,11 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 		if (irqflags & SX126X_IRQ_CRC_ERR) {
 			dev_warn(data->chardevice, "crc err\n");
+			goto irq_out;
 		}
 
 		memset(&pkt, 0, sizeof(pkt));
+		memset(buf, 0, MAX_PAYLOAD_LEN);
 
 		sx126x_read_buf(data, buf, &len);
 
@@ -1491,7 +1497,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 		sx126x_get_rssi_inst(data, &rssi);
 
-		print_hex_dump(KERN_DEBUG, NULL, DUMP_PREFIX_NONE, 16, 1, buf, len, false);
+		print_hex_dump(KERN_INFO, "pkt: ", DUMP_PREFIX_NONE, 16, 1, buf, len, true);
 
 		pkt.rssi = rssi;
 
@@ -1510,11 +1516,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 	} else if (irqflags & SX126X_IRQ_TX_DONE) {
 
-		//if (data->gpio_txen) {
-		//	gpiod_set_value(data->gpio_txen, 0);
-		//}
 		dev_warn(data->chardevice, "transmitted packet\n");
-
 
 		data->transmitted = 1;
 		wake_up(&data->writewq);
@@ -1538,6 +1540,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 			"unhandled interrupt state 0x%02X\n", (unsigned)irqflags);
 	}
 
+irq_out:
 	sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
 
 	mutex_unlock(&data->mutex);
@@ -1549,6 +1552,8 @@ static int sx126x_probe(struct spi_device *spi)
 	struct sx126x *data;
 	int irq;
 	unsigned minor;
+
+	uint8_t buffer[2] = {0x00};
 
 	// allocate all of the crap we need
 	data = kmalloc(sizeof(*data), GFP_KERNEL);
@@ -1718,6 +1723,11 @@ static int sx126x_probe(struct spi_device *spi)
 	//for test
 	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	sx126x_setup_v0(data, 472500000);
+
+	/* syncword: 0x1412 after setup_v0() */
+	sx126x_read_reg(data, SX126X_REG_LR_SYNCWORD, buffer, 2);
+	printk("Syncword: 0x%0X 0x%0X\n", buffer[0], buffer[1]);
+
 	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	sx126x_enter_rx(data);
 	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
