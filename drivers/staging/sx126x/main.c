@@ -551,13 +551,32 @@ int sx126x_set_stop_rx_timer_on_preamble(struct sx126x *dev, bool enable)
 
 int sx126x_set_lora_symb_num_timeout(struct sx126x *dev, uint8_t symb_num)
 {
-	u8 cmd[2];
+	u8 cmd[SX126X_SIZE_SET_LORA_SYMB_NUM_TIMEOUT];
+	u8 reg_val;
+
+    uint8_t exp = 0;
+    uint8_t mant =
+        (((symb_num > SX126X_MAX_LORA_SYMB_NUM_TIMEOUT) ? SX126X_MAX_LORA_SYMB_NUM_TIMEOUT : symb_num) + 1) >> 1;
+
+	int ret = 0;
+
+    while(mant > 31) {
+        mant = (mant + 3) >> 2;
+        exp++;
+    }
 
 	cmd[0] = SX126X_SET_LORA_SYMB_NUM_TIMEOUT;
-	cmd[1] = symb_num;
+	cmd[1] = mant << (2 * exp + 1);
 	
 	sx126x_wait_on_busy(dev);
-	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_LORA_SYMB_NUM_TIMEOUT);
+	ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_LORA_SYMB_NUM_TIMEOUT);
+
+	if (0 == ret && symb_num > 0) {
+		reg_val = exp + (mant << 3);
+		ret = sx126x_write_reg(dev, SX126X_REG_LR_SYNCH_TIMEOUT, &reg_val, 1);
+	}
+
+	return ret;
 }
 
 int sx126x_config_dio_irq(struct sx126x *dev, uint16_t irq_mask, uint16_t dio1_mask,
@@ -981,6 +1000,7 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	if (ret != 0)
 		dev_warn(&(data->spi->dev), "set top rx timer failed %d\n", ret);
 
+	/* set to 1 ~ 8 can not rx go & t8 data */
 	ret = sx126x_set_lora_symb_num_timeout(data, 0);
 	if (ret != 0)
 		dev_warn(&(data->spi->dev), "set lora symb failed %d\n", ret);
@@ -1017,6 +1037,9 @@ bool sx126x_enter_rx(struct sx126x *data)
 
 		sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
 
+		/*
+		 * set Rx Continuous mode, but also generate the irq timeout
+		 */
 		sx126x_set_rx(data, 0xFFFFFF);
 
 		rv = true;
@@ -1506,13 +1529,13 @@ static void sx126x_irq_handler(struct work_struct *work)
 		wake_up(&data->readwq);
 
 	} else if (irqflags & SX126X_IRQ_CRC_ERR) {
-			dev_warn(data->chardevice,
-				 "CRC Error for received payload\n");
-			pkt.crcfail = 1;
+
+		dev_warn(data->chardevice, "CRC Error for received payload\n");
+		pkt.crcfail = 1;
 
 	} else if (irqflags & SX126X_IRQ_HEADER_ERR) {
-			dev_warn(data->chardevice,
-				 "Header Error for received payload\n");
+
+		dev_warn(data->chardevice, "Header Error for received payload\n");
 
 	} else if (irqflags & SX126X_IRQ_TX_DONE) {
 
@@ -1524,20 +1547,16 @@ static void sx126x_irq_handler(struct work_struct *work)
 	} else if (irqflags & SX126X_IRQ_CAD_DONE) {
 
 		if (irqflags & SX126X_IRQ_CAD_DETECTED) {
-			dev_info(data->chardevice,
-				 "CAD done, detected activity\n");
+			dev_info(data->chardevice, "CAD done, detected activity\n");
 		} else {
-			dev_info(data->chardevice,
-				 "CAD done, nothing detected\n");
+			dev_info(data->chardevice, "CAD done, nothing detected\n");
 		}
 	} else if (irqflags & SX126X_IRQ_TIMEOUT) {
 
-		dev_info(data->chardevice,
-			 "Tx or Rx timeout\n");
+		//dev_info(data->chardevice, "Tx or Rx timeout\n");
 
 	} else {
-		dev_err(&data->spi->dev,
-			"unhandled interrupt state 0x%02X\n", (unsigned)irqflags);
+		dev_err(&data->spi->dev, "unhandled interrupt state 0x%02X\n", (unsigned)irqflags);
 	}
 
 irq_out:

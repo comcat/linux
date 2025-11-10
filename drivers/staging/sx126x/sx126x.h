@@ -32,6 +32,8 @@
 #define SX126X_PKT_TYPE_BPSK						0x02
 #define SX126X_PKT_TYPE_LR_FHSS						0x03
 
+#define	SX126X_MAX_LORA_SYMB_NUM_TIMEOUT			248
+
 //SX126X_CMD_SET_SLEEP
 #define SX126X_SLEEP_START_COLD                       0b00000000	//  2     2     sleep mode: cold start, configuration is lost (default)
 #define SX126X_SLEEP_START_WARM                       0b00000100	//  2     2                 warm start, configuration is retained
