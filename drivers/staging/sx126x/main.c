@@ -48,7 +48,8 @@ static int devmajor;
 static struct class *devclass;
 static bool tx_active = false;
 
-static unsigned bwmap[] = {20800, 31250, 41700, 62500, 125000, 250000, 500000};
+static unsigned bwmap[] = {7810, 15630, 31250, 62500, 125000, 250000, 500000};
+static char *crmap[] = {NULL, "4/5", "4/6", "4/7", "4/8"};
 
 /* Commands Interface */
 typedef enum sx126x_commands_e
@@ -552,7 +553,7 @@ int sx126x_set_stop_rx_timer_on_preamble(struct sx126x *dev, bool enable)
 int sx126x_set_lora_symb_num_timeout(struct sx126x *dev, uint8_t symb_num)
 {
 	u8 cmd[SX126X_SIZE_SET_LORA_SYMB_NUM_TIMEOUT];
-	u8 reg_val;
+	u8 reg_val = 0;
 
     uint8_t exp = 0;
     uint8_t mant =
@@ -571,10 +572,17 @@ int sx126x_set_lora_symb_num_timeout(struct sx126x *dev, uint8_t symb_num)
 	sx126x_wait_on_busy(dev);
 	ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_LORA_SYMB_NUM_TIMEOUT);
 
+	sx126x_read_reg(dev, SX126X_REG_LR_SYNCH_TIMEOUT, &reg_val, 1);
+	printk("REG_LR_SYNCH_TIMEOUT: 0x%0X\n", reg_val);
+
 	if (0 == ret && symb_num > 0) {
+
 		reg_val = exp + (mant << 3);
 		ret = sx126x_write_reg(dev, SX126X_REG_LR_SYNCH_TIMEOUT, &reg_val, 1);
 	}
+
+	sx126x_read_reg(dev, SX126X_REG_LR_SYNCH_TIMEOUT, &reg_val, 1);
+	printk("REG_LR_SYNCH_TIMEOUT: 0x%0X\n", reg_val);
 
 	return ret;
 }
@@ -1001,7 +1009,7 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 		dev_warn(&(data->spi->dev), "set top rx timer failed %d\n", ret);
 
 	/* set to 1 ~ 8 can not rx go & t8 data */
-	ret = sx126x_set_lora_symb_num_timeout(data, 0);
+	ret = sx126x_set_lora_symb_num_timeout(data, 1);
 	if (ret != 0)
 		dev_warn(&(data->spi->dev), "set lora symb failed %d\n", ret);
 
@@ -1129,15 +1137,14 @@ void sx126x_workaround_ant_mismatch(struct sx126x *data)
 	sx126x_cfg_tx_clamp(data);
 }
 
-/////////////////////////////////////////////////////////////////////////////////
-
+/*
+ * api file located at: /sys/class/sx126x/sx126x0
+ *
+*/
 static int sx126x_set_crc(struct sx126x *data, bool crc)
 {
 	dev_warn(data->chardevice, "Setting crc to %d\n", crc);
 
-	//sx126x_read_reg(data, SX126X_REG_LORA_MODEMCONFIG2, &reg);
-
-	//sx126x_write_reg(data, SX126X_REG_LORA_MODEMCONFIG2, reg);
 
 	return 0;
 }
@@ -1183,7 +1190,6 @@ static ssize_t sx126x_freq_show(struct device *dev,
 					    char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-
 	return sprintf(buf, "%u\n", data->_tx_freq);
 }
 
@@ -1198,10 +1204,9 @@ static ssize_t sx126x_freq_store(struct device *dev,
 		goto out;
 	}
 	mutex_lock(&data->mutex);
-
 	sx126x_set_freq(data, freq);
-
 	mutex_unlock(&data->mutex);
+
  out:
 	return count;
 }
@@ -1229,6 +1234,8 @@ static int sx126x_set_sf(struct sx126x *data, unsigned sf)
 {
 	dev_info(data->chardevice, "setting spreading factor to %u\n", sf);
 
+	data->_sf = sf;
+	sx126x_set_lora_modulation_params(data, data->_sf, data->_bw, data->_cr, data->_ldro);
 
 	return 0;
 }
@@ -1256,21 +1263,21 @@ static ssize_t sx126x_bw_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	int bw = 4;
+	int ret = 0;
 
 	mutex_lock(&data->mutex);
-
-	sprintf(buf, "%d\n", bwmap[bw]);
-
+	ret = sprintf(buf, "%d\n", bwmap[data->_bw]);
 	mutex_unlock(&data->mutex);
-	return 0;
+
+	return ret;
 }
 
 static int sx126x_set_bw(struct sx126x *data, unsigned bw){
 
 	dev_info(data->chardevice, "setting BW to %u\n", bw);
 
-	// set the BW
+	data->_bw = bw;
+	sx126x_set_lora_modulation_params(data, data->_sf, data->_bw, data->_cr, data->_ldro);
 
 	return 0;
 }
@@ -1279,7 +1286,17 @@ static ssize_t sx126x_bw_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
-	//struct sx126x *data = dev_get_drvdata(dev);
+	struct sx126x *data = dev_get_drvdata(dev);
+	int bw = BW500;
+
+	if (kstrtoint(buf, 10, &bw)) {
+		goto out;
+	}
+
+	mutex_lock(&data->mutex);
+	sx126x_set_bw(data, bw);
+	mutex_unlock(&data->mutex);
+out:
 	return count;
 }
 
@@ -1293,17 +1310,19 @@ static ssize_t sx126x_cr_show(struct device *dev,
 	int ret = 0;
 
 	mutex_lock(&data->mutex);
-
-	//sprintf(buf, "%s\n", crmap[cr]);
-
+	ret = sprintf(buf, "%s\n", crmap[data->_cr]);
 	mutex_unlock(&data->mutex);
 
 	return ret;
 }
 
-static int sx126x_set_cr(struct sx126x *data, unsigned cr){
+static int sx126x_set_cr(struct sx126x *data, unsigned cr)
+{
 	dev_info(data->chardevice, "setting CR to %u\n", cr);
 
+	data->_cr = cr;
+
+	sx126x_set_lora_modulation_params(data, data->_sf, data->_bw, data->_cr, data->_ldro);
 
 	return 0;
 }
@@ -1312,7 +1331,18 @@ static ssize_t sx126x_cr_store(struct device *dev,
 				       struct device_attribute *attr,
 				       const char *buf, size_t count)
 {
-	//struct sx126x *data = dev_get_drvdata(dev);
+	struct sx126x *data = dev_get_drvdata(dev);
+	int cr = CR46;
+
+	if (kstrtoint(buf, 10, &cr)) {
+		goto out;
+	}
+
+	mutex_lock(&data->mutex);
+	sx126x_set_cr(data, cr);
+	mutex_unlock(&data->mutex);
+
+out:
 	return count;
 }
 

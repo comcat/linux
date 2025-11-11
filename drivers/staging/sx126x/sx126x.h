@@ -15,10 +15,18 @@
 #define BW125										0x4
 #define BW250										0x5
 #define BW500										0x6
+// LORA_BW062 = 3
+// LORA_BW041 = 10
+// LORA_BW031 = 2
+// LORA_BW020 = 9
+// LORA_BW015 = 1
+// LORA_BW010 = 8
+// LORA_BW007 = 0
 
 #define CR45										0x1
 #define CR46										0x2
 #define CR47										0x3
+#define CR48										0x4
 
 #define SX126X_SYNCWORD_PUBLIC                       0x3444
 #define SX126X_SYNCWORD_PRIVATE                      0x1424
