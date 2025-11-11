@@ -692,7 +692,7 @@ static int sx126x_set_lora_modulation_params(struct sx126x *dev, int8_t sf, uint
  * ASR6500: 0x22
  * SX126x: 0x2A
  */ 
-int sx126x_get_status(struct sx126x *dev)
+uint8_t sx126x_get_status(struct sx126x *dev)
 {
     u8 cmd[SX126X_SIZE_GET_STATUS] = {
         SX126X_GET_STATUS,
@@ -1009,7 +1009,7 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 		dev_warn(&(data->spi->dev), "set top rx timer failed %d\n", ret);
 
 	/* set to 1 ~ 8 can not rx go & t8 data */
-	ret = sx126x_set_lora_symb_num_timeout(data, 1);
+	ret = sx126x_set_lora_symb_num_timeout(data, 0);
 	if (ret != 0)
 		dev_warn(&(data->spi->dev), "set lora symb failed %d\n", ret);
 
@@ -1141,49 +1141,78 @@ void sx126x_workaround_ant_mismatch(struct sx126x *data)
  * api file located at: /sys/class/sx126x/sx126x0
  *
 */
-static int sx126x_set_crc(struct sx126x *data, bool crc)
-{
-	dev_warn(data->chardevice, "Setting crc to %d\n", crc);
 
 
-	return 0;
-}
+/*
+ * rv[6:4]: chip modes
+ *   0x2: STBY_RC
+ *   0x3: STBY_XOSC
+ *   0x4: FS
+ *   0x5: RX
+ *   0x6: TX
+ *
+ * rv[3:1]: cmd status
+ *   0x2: pkt rx ok and data can be check
+ *   0x3: cmd timeout
+ *   0x4: cmd err
+ *   0x5: cmd failure
+ *   0x6: cmd tx done
+ */
+static char *cmmap[] = {NULL, "RFU", "STBY_RC", "STBY_XOSC", "FS", "RX", "TX"};
 
-static ssize_t sx126x_crc_show(struct device *dev, struct device_attribute *attr,
+static ssize_t sx126x_status_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
 
-	mutex_lock(&data->mutex);
+	uint8_t rv = sx126x_get_status(data);
 
-	mutex_unlock(&data->mutex);
+	int st_i = (rv >> 4) & 0x7;
 
-	return sprintf(buf, "%d\n", 0x1);
+	dev_info(data->chardevice, "status: 0x%0X (%d, %d)\n", rv, st_i, (rv >> 1) & 0x7);
+
+	return sprintf(buf, "%s\n", cmmap[st_i]);
 }
 
-static ssize_t sx126x_crc_store(struct device *dev,
+static ssize_t sx126x_status_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	int crc = 1;
-
-	if (kstrtoint(buf, 10, &crc)) {
-		goto out;
-	}
 
 	mutex_lock(&data->mutex);
 
-	//sx126x_set_crc(data, crc);
+	if (strcmp(buf, "RX\n") == 0) {
+
+		dev_info(data->chardevice, "Enter RX\n");
+		sx126x_enter_rx(data);
+
+	} else if (strcmp(buf, "TX\n") == 0) {
+
+		dev_info(data->chardevice, "Enter TX\n");
+
+	} else if (strcmp(buf, "FS\n") == 0) {
+
+		dev_info(data->chardevice, "Enter FS\n");
+
+	} else if (strcmp(buf, "STBY_RC\n") == 0) {
+
+		dev_info(data->chardevice, "Enter STBY_RC\n");
+		sx126x_set_standby(data, SX126X_STANDBY_RC);
+
+	} else if (strcmp(buf, "STBY_XOSC\n") == 0) {
+
+		dev_info(data->chardevice, "Enter STBY_XOSC\n");
+		sx126x_set_standby(data, SX126X_STANDBY_XOSC);
+	}
 
 	mutex_unlock(&data->mutex);
 
- out:
 	return count;
 }
 
-static DEVICE_ATTR(crc, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
-		   sx126x_crc_show, sx126x_crc_store);
+static DEVICE_ATTR(status, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+		   sx126x_status_show, sx126x_status_store);
 
 static ssize_t sx126x_freq_show(struct device *dev,
 					    struct device_attribute *attr,
@@ -1489,7 +1518,6 @@ static long sx126x_dev_ioctl(struct file *filp, unsigned int cmd,
 			ret = 0;
 			break;
 		case SX126X_IOCTL_CMD_SET_CRC:
-			ret = sx126x_set_crc(data, arg & 0x1);
 			break;
 		case SX126X_IOCTL_CMD_GET_CRC:
 			ret = 0;
@@ -1765,7 +1793,7 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_sf);
 	ret = device_create_file(data->chardevice, &dev_attr_bw);
 	ret = device_create_file(data->chardevice, &dev_attr_cr);
-	ret = device_create_file(data->chardevice, &dev_attr_crc);
+	ret = device_create_file(data->chardevice, &dev_attr_status);
 
 
 	/////////////////////////
@@ -1812,7 +1840,7 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_sf);
 	device_remove_file(data->chardevice, &dev_attr_bw);
 	device_remove_file(data->chardevice, &dev_attr_cr);
-	device_remove_file(data->chardevice, &dev_attr_crc);
+	device_remove_file(data->chardevice, &dev_attr_status);
 
 	device_destroy(devclass, data->devt);
 
