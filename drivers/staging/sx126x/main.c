@@ -46,7 +46,6 @@
 
 static int devmajor;
 static struct class *devclass;
-static bool tx_active = false;
 
 static unsigned bwmap[] = {7810, 15630, 31250, 62500, 125000, 250000, 500000};
 static char *crmap[] = {NULL, "4/5", "4/6", "4/7", "4/8"};
@@ -186,6 +185,7 @@ struct sx126x {
 	/* tx */
 	wait_queue_head_t writewq;
 	int transmitted;
+	bool tx_active;
 
 	/* rx */
 	wait_queue_head_t readwq;
@@ -377,20 +377,24 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 	return ret;
 }
 
-static int sx126x_write_buf(struct spi_device *spi, void *buffer, u8 len)
+static int sx126x_write_buf(struct sx126x *data, void *buffer, size_t len)
 {
 	int ret = 0;
-	u8 cmd[2] = {SX126X_WRITE_BUFFER, 0};
+	u8 cmd[SX126X_SIZE_WRITE_BUFFER] = {
+		SX126X_WRITE_BUFFER,
+		SX126X_NOP
+	};
 
 	struct spi_transfer fifotransfers[] = {
-		{.tx_buf = &cmd, .len = 2},
+		{.tx_buf = &cmd, .len = SX126X_SIZE_WRITE_BUFFER},
 		{.tx_buf = buffer, .len = len},
 	};
 
-	dev_info(&spi->dev, "FIFO write: %d\n", len);
-	print_hex_dump(KERN_DEBUG, NULL, DUMP_PREFIX_NONE, 16, 1, buffer, len, true);
+	dev_info(&data->spi->dev, "FIFO write: %d\n", len);
 
-	spi_sync_transfer(spi, fifotransfers, ARRAY_SIZE(fifotransfers));
+	print_hex_dump(KERN_INFO, "tx: ", DUMP_PREFIX_NONE, 16, 1, buffer, len, true);
+
+	ret = spi_sync_transfer(data->spi, fifotransfers, ARRAY_SIZE(fifotransfers));
 
 	//if (memcmp(buffer, readbackbuff, len) != 0) {
 	//	dev_err(&spi->dev, "FIFO readback doesn't match\n");
@@ -991,6 +995,8 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	data->_cr = CR46;
 	data->_ldro = true;
 
+	data->tx_active = false;
+
 	data->_tx_freq = freq;
 
 	data->_tx_power = 22;
@@ -1035,7 +1041,7 @@ bool sx126x_enter_rx(struct sx126x *data)
 {
 	bool rv = false;
 
-	if (tx_active == false) {
+	if (data->tx_active == false) {
 
 		sx126x_set_dio_irq_params(data,
 						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
@@ -1092,6 +1098,60 @@ int sx126x_get_rx_pkt(struct sx126x *data, u8 *pkt, u8 len)
 	sx126x_clear_irq_status(data, SX126X_IRQ_RX_DONE | SX126X_IRQ_CRC_ERR | SX126X_IRQ_TIMEOUT);
 
 	return rx_len;
+}
+
+int sx126x_send(struct sx126x *dev, uint8_t *buf, size_t len, uint8_t mode)
+{
+	int ret = -1;
+	u32 cnt_100us = 0;
+
+	if (false == dev->tx_active) {
+		dev->tx_active = true;
+
+		ret = sx126x_set_lora_pkt_params(dev, len);
+
+		ret = sx126x_write_buf(dev, buf, len);
+
+        ret = sx126x_lora_tx_modulation_workaround(dev, dev->_bw);
+
+		if (dev->_cad_on) {
+			//carrier_sense();
+		}
+
+		sx126x_config_dio_irq(dev,
+						SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT,
+						SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT,
+						SX126X_IRQ_NONE,
+						SX126X_IRQ_NONE);
+
+		sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
+
+		ret = sx126x_set_tx(dev, 200);
+
+		if (mode & SX126X_TXMODE_SYNC) {
+
+			/* waitting the flag to false */
+			do
+			{
+				udelay(100);
+				cnt_100us++;
+
+			} while(true == dev->tx_active && cnt_100us < 5000);
+
+			if (cnt_100us >= 5000) {
+				dev_err(dev->chardevice, "TX extended 500ms!\n");
+				dev->tx_active = false;
+				ret = -2;
+			}
+		}
+
+	} else {
+
+		dev_warn(dev->chardevice, "TX is active\n");
+		ret = -1;
+	}
+
+	return ret;
 }
 
 void sx126x_reset(struct sx126x *data)
@@ -1438,6 +1498,7 @@ static ssize_t sx126x_dev_write(struct file *filp, const char __user * buf,
 {
 	struct sx126x *data = filp->private_data;
 	size_t packetsz, offset, maxpkt = 256;
+	int ret = -1;
 
 	u8 kbuf[256];
 	dev_info(&data->spi->dev, "char device write; %d\n", count);
@@ -1447,15 +1508,14 @@ static ssize_t sx126x_dev_write(struct file *filp, const char __user * buf,
 		packetsz = min((count - offset), maxpkt);
 
 		mutex_lock(&data->mutex);
-		copy_from_user(kbuf, buf + offset, packetsz);
 
-		//sx126x_set_opmode(data, SX126X_OPMODE_STANDBY, false);
+		ret = copy_from_user(kbuf, buf + offset, packetsz);
 
-		sx126x_write_buf(data->spi, kbuf, packetsz);
+		sx126x_set_standby(data, SX126X_STANDBY_RC);
 
 		data->transmitted = 0;
 
-		//sx126x_set_opmode(data, SX126X_OPMODE_TX, false);
+		sx126x_send(data, kbuf, packetsz, SX126X_TXMODE_SYNC);
 
 		mutex_unlock(&data->mutex);
 
@@ -1484,7 +1544,7 @@ static long sx126x_dev_ioctl(struct file *filp, unsigned int cmd,
 			     unsigned long arg)
 {
 	struct sx126x *data = filp->private_data;
-	int ret;
+	int ret = -1;
 	enum sx126x_ioctl_cmd ioctlcmd = cmd;
 
 	mutex_lock(&data->mutex);
@@ -1578,7 +1638,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 		sx126x_get_rssi_inst(data, &rssi);
 
-		print_hex_dump(KERN_INFO, "pkt: ", DUMP_PREFIX_NONE, 16, 1, buf, len, true);
+		print_hex_dump(KERN_INFO, "rx: ", DUMP_PREFIX_NONE, 16, 1, buf, len, true);
 
 		pkt.rssi = rssi;
 
@@ -1600,6 +1660,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 		dev_warn(data->chardevice, "transmitted packet\n");
 
 		data->transmitted = 1;
+
 		wake_up(&data->writewq);
 
 	} else if (irqflags & SX126X_IRQ_CAD_DONE) {
@@ -1761,7 +1822,7 @@ static int sx126x_probe(struct spi_device *spi)
 		ret = -EINVAL;
 		goto err_irq;
 	}
-	devm_request_irq(&spi->dev, irq, sx126x_irq, 0, SX126X_DRIVERNAME, data);
+	ret = devm_request_irq(&spi->dev, irq, sx126x_irq, 0, SX126X_DRIVERNAME, data);
 
 	// create the frontend device and stash it in the spi device
 	mutex_lock(&device_list_lock);

@@ -31,9 +31,9 @@
 #define SX126X_SYNCWORD_PUBLIC                       0x3444
 #define SX126X_SYNCWORD_PRIVATE                      0x1424
 
-#define SX126x_TXMODE_ASYNC                           0x01
-#define SX126x_TXMODE_SYNC                            0x02
-#define SX126x_TXMODE_BACK2RX                         0x04
+#define SX126X_TXMODE_ASYNC                           0x01
+#define SX126X_TXMODE_SYNC                            0x02
+#define SX126X_TXMODE_BACK2RX                         0x04
 
 #define SX126X_PKT_TYPE_GFSK						0x00
 #define SX126X_PKT_TYPE_LORA						0x01
