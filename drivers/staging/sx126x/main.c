@@ -1034,6 +1034,7 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	data->_preamble_len = 8;
 
 	data->tx_active = false;
+	data->cnt_crc_err = 0;
 
 	data->_tx_freq = freq;
 	data->_tx_power = 22;
@@ -1396,6 +1397,47 @@ static ssize_t sx126x_rssi_show(struct device *dev,
 }
 
 static DEVICE_ATTR(rssi, S_IRUSR | S_IRGRP | S_IROTH, sx126x_rssi_show, NULL);
+
+static ssize_t sx126x_crc_err_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", data->cnt_crc_err);
+}
+
+static DEVICE_ATTR(cnt_crc_err, S_IRUSR | S_IRGRP | S_IROTH, sx126x_crc_err_show, NULL);
+
+static ssize_t sx126x_cad_on_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", data->_cad_on);
+}
+
+static ssize_t sx126x_cad_on_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	int cad_on;
+	if (kstrtoint(buf, 10, &cad_on)) {
+		goto out;
+	}
+
+	dev_info(data->chardevice, "setting cad_on to %u\n", cad_on);
+
+	mutex_lock(&data->mutex);
+	data->_cad_on = cad_on;
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(cad_on, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, sx126x_cad_on_show,
+		   sx126x_cad_on_store);
 
 static ssize_t sx126x_sf_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
@@ -1773,14 +1815,6 @@ static void sx126x_irq_handler(struct work_struct *work)
 		}
 	}
 
-	if (irqflags & SX126X_IRQ_CRC_ERR) {
-
-	#ifdef SX126X_DEBUG_IRQ
-		dev_warn(data->chardevice, "CRC Error\n");
-	#endif
-		data->cnt_crc_err = 1;
-	}
-
 #ifdef SX126X_DEBUG_IRQ
 	if (irqflags & SX126X_IRQ_HEADER_ERR) {
 
@@ -1800,6 +1834,14 @@ static void sx126x_irq_handler(struct work_struct *work)
 #endif
 
 irq_out:
+
+	if (irqflags & SX126X_IRQ_CRC_ERR) {
+	#ifdef SX126X_DEBUG_IRQ
+		dev_warn(data->chardevice, "CRC Error\n");
+	#endif
+		data->cnt_crc_err += 1;
+	}
+
 	sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
 
 	mutex_unlock(&data->mutex);
@@ -1968,6 +2010,8 @@ static int sx126x_probe(struct spi_device *spi)
 	//ret = device_create_file(data->chardevice, &dev_attr_modulation);
 	ret = device_create_file(data->chardevice, &dev_attr_freq);
 	ret = device_create_file(data->chardevice, &dev_attr_rssi);
+	ret = device_create_file(data->chardevice, &dev_attr_cnt_crc_err);
+	ret = device_create_file(data->chardevice, &dev_attr_cad_on);
 	//ret = device_create_file(data->chardevice, &dev_attr_dbm);
 
 	// these are LoRa specifc
@@ -2015,6 +2059,8 @@ static int sx126x_remove(struct spi_device *spi)
 	//device_remove_file(data->chardevice, &dev_attr_modulation);
 	device_remove_file(data->chardevice, &dev_attr_freq);
 	device_remove_file(data->chardevice, &dev_attr_rssi);
+	device_remove_file(data->chardevice, &dev_attr_cnt_crc_err);
+	device_remove_file(data->chardevice, &dev_attr_cad_on);
 	//device_remove_file(data->chardevice, &dev_attr_dbm);
 
 	device_remove_file(data->chardevice, &dev_attr_sf);
