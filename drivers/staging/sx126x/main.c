@@ -931,9 +931,10 @@ int sx126x_set_buffer_base_addr(struct sx126x *dev, uint8_t tx_addr, uint8_t rx_
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_BUFFER_BASE_ADDRESS);
 }
 
-void sx126x_set_tx_power(struct sx126x *dev, int8_t dbm)
+int sx126x_set_tx_power(struct sx126x *dev, int8_t dbm)
 {
     uint8_t cmd[3] = {0};
+	int ret = -1;
 
 	// sx1262 or sx1268
 	if (dbm > 22) {
@@ -943,12 +944,12 @@ void sx126x_set_tx_power(struct sx126x *dev, int8_t dbm)
 	}
 
 	if (dbm <= 14) {
-		sx126x_set_pa_config(dev, 0x02, 0x02, 0x00, 0x01);
+		ret = sx126x_set_pa_config(dev, 0x02, 0x02, 0x00, 0x01);
 	} else {
-		sx126x_set_pa_config(dev, 0x04, 0x07, 0x00, 0x01);
+		ret = sx126x_set_pa_config(dev, 0x04, 0x07, 0x00, 0x01);
 	}
 
-	sx126x_set_over_current_protect(dev, 0x38);		// set max current to 140mA
+	ret = sx126x_set_over_current_protect(dev, 0x38);		// set max current to 140mA
 	//write_reg(SX126X_REG_OCP, 0x38);				// current max 160mA for the whole device
 
 	cmd[0] = SX126X_SET_TX_PARAMS;
@@ -957,7 +958,9 @@ void sx126x_set_tx_power(struct sx126x *dev, int8_t dbm)
     // cmd[2] = RADIO_RAMP_20_US;				// XTAL
 
 	sx126x_wait_on_busy(dev);
-    spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
+    ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
+
+	return ret;
 }
 
 int sx126x_set_syncword(struct sx126x *dev, u8 syncword)
@@ -1469,6 +1472,46 @@ static ssize_t sx126x_cad_on_store(struct device *dev,
 
 static DEVICE_ATTR(cad_on, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, sx126x_cad_on_show,
 		   sx126x_cad_on_store);
+
+static ssize_t sx126x_dbm_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", data->_tx_power);
+}
+
+static ssize_t sx126x_dbm_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	int dbm = 0;
+	int ret = 0;
+
+	if (kstrtoint(buf, 10, &dbm)) {
+		goto out;
+	}
+
+	dev_info(data->chardevice, "setting dbm to %u\n", dbm);
+
+	mutex_lock(&data->mutex);
+
+	ret = sx126x_set_tx_power(data, dbm);
+
+	if (0 == ret) {
+		data->_tx_power = dbm;
+	} else {
+		dev_info(data->chardevice, "setting dbm failed\n");
+	}
+
+	mutex_unlock(&data->mutex);
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(dbm, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, sx126x_dbm_show,
+		   sx126x_dbm_store);
 
 static ssize_t sx126x_sf_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
@@ -2050,7 +2093,7 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_cnt_rx255);
 	ret = device_create_file(data->chardevice, &dev_attr_cnt_rx);
 	ret = device_create_file(data->chardevice, &dev_attr_cad_on);
-	//ret = device_create_file(data->chardevice, &dev_attr_dbm);
+	ret = device_create_file(data->chardevice, &dev_attr_dbm);
 
 	// these are LoRa specifc
 	ret = device_create_file(data->chardevice, &dev_attr_sf);
@@ -2101,7 +2144,7 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_cnt_rx255);
 	device_remove_file(data->chardevice, &dev_attr_cnt_rx);
 	device_remove_file(data->chardevice, &dev_attr_cad_on);
-	//device_remove_file(data->chardevice, &dev_attr_dbm);
+	device_remove_file(data->chardevice, &dev_attr_dbm);
 
 	device_remove_file(data->chardevice, &dev_attr_sf);
 	device_remove_file(data->chardevice, &dev_attr_bw);
