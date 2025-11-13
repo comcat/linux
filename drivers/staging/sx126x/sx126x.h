@@ -95,6 +95,15 @@
 #define SX126X_CALIBRATE_RC64K_OFF                    0b00000000	//  0     0     64 kHz RC osc. calibration: disabled
 #define SX126X_CALIBRATE_RC64K_ON                     0b00000001	//  0     0                                 enabled
 
+//SX126X_CMD_SET_CAD_PARAMS
+#define SX126X_CAD_ON_1_SYMB                          0x00	//  7     0     number of symbols used for CAD: 1
+#define SX126X_CAD_ON_2_SYMB                          0x01	//  7     0                                     2
+#define SX126X_CAD_ON_4_SYMB                          0x02	//  7     0                                     4
+#define SX126X_CAD_ON_8_SYMB                          0x03	//  7     0                                     8
+#define SX126X_CAD_ON_16_SYMB                         0x04	//  7     0                                     16
+#define SX126X_CAD_GOTO_STDBY                         0x00	//  7     0     after CAD is done, always go to STDBY_RC mode
+#define SX126X_CAD_GOTO_RX                            0x01	//  7     0     after CAD is done, go to Rx mode if activity is detected
+
 //SX126X_CMD_CALIBRATE_IMAGE
 #define SX126X_CAL_IMG_430_MHZ_1                      0x6B
 #define SX126X_CAL_IMG_430_MHZ_2                      0x6F
