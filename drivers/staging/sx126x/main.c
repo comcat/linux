@@ -202,6 +202,7 @@ struct sx126x {
 	bool _ldro;
 
 	u32 cnt_crc_err;
+	u32 cnt_rx255;
 };
 
 static LIST_HEAD(device_list);
@@ -349,7 +350,11 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 
 	ret = sx126x_get_rxbuf_status(dev, &rx_len, &pktstart);
 
-	dev_warn(&(dev->spi->dev), "Rx FIFO: %d Bytes @ 0x%02x\n", rx_len, pktstart);
+	if (rx_len == 255) {
+		dev->cnt_rx255 += 1;
+	}
+
+	//dev_warn(&(dev->spi->dev), "Rx FIFO: %d Bytes @ 0x%02x\n", rx_len, pktstart);
 
 	if (rx_len > 0 && rx_len <= MAX_PAYLOAD_LEN) {
 		/* buffer is ok */
@@ -1026,6 +1031,7 @@ int sx126x_set_dio_irq_params(struct sx126x *dev, u16 irq_mask, u16 dio1_mask,
 int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 {
 	int ret = 0;
+
 	data->_sf = SF10;
 	data->_bw = BW500;
 	data->_cr = CR46;
@@ -1035,6 +1041,7 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 
 	data->tx_active = false;
 	data->cnt_crc_err = 0;
+	data->cnt_rx255 = 0;
 
 	data->_tx_freq = freq;
 	data->_tx_power = 22;
@@ -1407,6 +1414,16 @@ static ssize_t sx126x_crc_err_show(struct device *dev,
 }
 
 static DEVICE_ATTR(cnt_crc_err, S_IRUSR | S_IRGRP | S_IROTH, sx126x_crc_err_show, NULL);
+
+static ssize_t sx126x_rx255_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", data->cnt_rx255);
+}
+
+static DEVICE_ATTR(cnt_rx255, S_IRUSR | S_IRGRP | S_IROTH, sx126x_rx255_show, NULL);
 
 static ssize_t sx126x_cad_on_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
@@ -1781,8 +1798,10 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 			print_hex_dump(KERN_INFO, "rx: ", DUMP_PREFIX_NONE, 16, 1, buf, len, true);
 
+		#ifdef SX126X_DEBUG_IRQ
 		} else {
 			dev_warn(data->chardevice, "payload len is 0\n");
+		#endif
 		}
 	}
 
@@ -2011,6 +2030,7 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_freq);
 	ret = device_create_file(data->chardevice, &dev_attr_rssi);
 	ret = device_create_file(data->chardevice, &dev_attr_cnt_crc_err);
+	ret = device_create_file(data->chardevice, &dev_attr_cnt_rx255);
 	ret = device_create_file(data->chardevice, &dev_attr_cad_on);
 	//ret = device_create_file(data->chardevice, &dev_attr_dbm);
 
@@ -2060,6 +2080,7 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_freq);
 	device_remove_file(data->chardevice, &dev_attr_rssi);
 	device_remove_file(data->chardevice, &dev_attr_cnt_crc_err);
+	device_remove_file(data->chardevice, &dev_attr_cnt_rx255);
 	device_remove_file(data->chardevice, &dev_attr_cad_on);
 	//device_remove_file(data->chardevice, &dev_attr_dbm);
 
