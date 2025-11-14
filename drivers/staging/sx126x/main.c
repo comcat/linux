@@ -557,12 +557,10 @@ int sx126x_set_lora_pkt_params(struct sx126x *dev, size_t pkt_len)
 	int ret = 0;
 	u8 reg_val = 0;
 
-	int _preamble_len = 8;
-
 	cmd[0] = SX126X_SET_PKT_PARAMS;
 
-	cmd[1] = (_preamble_len>> 8) & 0xFF;
-    cmd[2] = _preamble_len;
+	cmd[1] = (uint8_t)(dev->_preamble_len >> 8);
+    cmd[2] = (uint8_t)(dev->_preamble_len);
 
     cmd[3] = 0x00;   /* Explicit Header */
 
@@ -1498,6 +1496,40 @@ static ssize_t sx126x_rx_show(struct device *dev,
 
 static DEVICE_ATTR(cnt_rx, S_IRUSR | S_IRGRP | S_IROTH, sx126x_rx_show, NULL);
 
+static ssize_t sx126x_pre_len_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%d\n", data->_preamble_len);
+}
+
+static ssize_t sx126x_pre_len_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	int pre_len;
+	if (kstrtoint(buf, 10, &pre_len)) {
+		goto out;
+	}
+
+	dev_info(data->chardevice, "setting preamble_len to %u\n", pre_len);
+
+	mutex_lock(&data->mutex);
+	data->_preamble_len = pre_len;
+
+	sx126x_set_lora_pkt_params(data, 0xFF);
+
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(pre_len, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, sx126x_pre_len_show,
+		   sx126x_pre_len_store);
+
 static ssize_t sx126x_cad_on_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
@@ -2181,6 +2213,7 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_cnt_rx);
 	ret = device_create_file(data->chardevice, &dev_attr_cad_on);
 	ret = device_create_file(data->chardevice, &dev_attr_dbm);
+	ret = device_create_file(data->chardevice, &dev_attr_pre_len);
 
 	// these are LoRa specifc
 	ret = device_create_file(data->chardevice, &dev_attr_sf);
@@ -2232,6 +2265,7 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_cnt_rx);
 	device_remove_file(data->chardevice, &dev_attr_cad_on);
 	device_remove_file(data->chardevice, &dev_attr_dbm);
+	device_remove_file(data->chardevice, &dev_attr_pre_len);
 
 	device_remove_file(data->chardevice, &dev_attr_sf);
 	device_remove_file(data->chardevice, &dev_attr_bw);
