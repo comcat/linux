@@ -167,6 +167,34 @@ typedef enum sx126x_commands_size_e
     SX126X_SIZE_DUMMY_BYTE        = 1,
 } sx126x_commands_size_t;
 
+typedef enum sx126x_cad_symbs_e
+{
+	SX126X_CAD_01_SYMB = 0x00,
+	SX126X_CAD_02_SYMB = 0x01,
+	SX126X_CAD_04_SYMB = 0x02,
+	SX126X_CAD_08_SYMB = 0x03,
+	SX126X_CAD_16_SYMB = 0x04,
+} sx126x_cad_symbs_t;
+
+typedef enum sx126x_cad_exit_mode_e
+{
+	SX126X_CAD_ONLY = 0x00,
+	SX126X_CAD_RX   = 0x01,
+	SX126X_CAD_LBT  = 0x10,
+} sx126x_cad_exit_mode_t;
+
+typedef struct sx126x_cad_param_s
+{
+	sx126x_cad_symbs_t      sym_num;		// CAD number of symbols
+	uint8_t                 det_pek;		// CAD peak detection
+	uint8_t                 det_min;		// CAD minimum detection
+	sx126x_cad_exit_mode_t	exit_mode;		// CAD exit mode
+	uint32_t                timeout;		// CAD timeout value
+} sx126x_cad_param_t;
+
+#define DELAY_MS_BEFORE_CAD				900
+#define	CAD_TIMEOUT_MS					1000
+
 struct sx126x {
 	struct device *chardevice;
 	struct work_struct irq_work;
@@ -200,6 +228,8 @@ struct sx126x {
 	u8 _tx_power;
 	u32 _tx_freq;
 	bool _ldro;
+
+	sx126x_cad_param_t cad_param;
 
 	u32 cnt_crc_err;
 	u32 cnt_rx255;
@@ -561,7 +591,7 @@ int sx126x_set_lora_pkt_params(struct sx126x *dev, size_t pkt_len)
 
 int sx126x_set_stop_rx_timer_on_preamble(struct sx126x *dev, bool enable)
 {
-	u8 cmd[2];
+	u8 cmd[SX126X_SIZE_SET_STOP_TIMER_ON_PREAMBLE];
 
 	cmd[0] = SX126X_SET_STOP_TIMER_ON_PREAMBLE;
 	cmd[1] = enable;
@@ -1087,6 +1117,12 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 		dev_warn(&(data->spi->dev), "set pkt param failed %d\n", ret);
 
 	data->_cad_on = true;
+	data->cad_param.sym_num = SX126X_CAD_04_SYMB;
+	data->cad_param.det_pek = 23;
+	data->cad_param.det_min = 10;
+	data->cad_param.exit_mode = SX126X_CAD_ONLY;
+	data->cad_param.timeout = sx126x_convert_timeout_to_rtc_step(CAD_TIMEOUT_MS);
+
 	/*
 	 * BW500:
 	 *  SF7: sym_num = 4, det_pek = 21, det_min = 10
@@ -1105,7 +1141,9 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	 *  SF11: 4,25,10
 	 *  SF12: 4,28,10
 	 */
-	ret = sx126x_set_cad_params(data, 4, 23, 10, SX126X_CAD_GOTO_STDBY, 0);
+	ret = sx126x_set_cad_params(data, data->cad_param.sym_num, data->cad_param.det_pek,
+								data->cad_param.det_min, data->cad_param.exit_mode,
+								data->cad_param.timeout);
 	if (ret != 0)
 		dev_warn(&(data->spi->dev), "set cad param failed %d\n", ret);
 
@@ -1183,6 +1221,12 @@ int sx126x_get_rx_pkt(struct sx126x *data, u8 *pkt, u8 len)
 	return rx_len;
 }
 
+static void sx126x_start_cad_after_delay(struct sx126x *dev, uint16_t ms)
+{	
+	mdelay(ms);
+	sx126x_set_cad(dev);
+}
+
 int sx126x_send(struct sx126x *dev, uint8_t *buf, size_t len, uint8_t mode)
 {
 	int ret = -1;
@@ -1199,6 +1243,7 @@ int sx126x_send(struct sx126x *dev, uint8_t *buf, size_t len, uint8_t mode)
 
 		if (dev->_cad_on) {
 			//carrier_sense();
+			#if 0
 			sx126x_set_dio_irq_params(dev,
 									SX126X_IRQ_CAD_DETECTED | SX126X_IRQ_CAD_DONE | SX126X_IRQ_TX_DONE |
 									SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
@@ -1206,11 +1251,22 @@ int sx126x_send(struct sx126x *dev, uint8_t *buf, size_t len, uint8_t mode)
 									SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
 									SX126X_IRQ_NONE,
 									SX126X_IRQ_NONE);
+			#else
+			sx126x_set_dio_irq_params(dev,
+									SX126X_IRQ_ALL,
+									SX126X_IRQ_ALL,
+									SX126X_IRQ_NONE,
+									SX126X_IRQ_NONE);
+			#endif
 			sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
 
-			mdelay(500);
-			sx126x_set_cad(dev);
 
+			dev->cad_param.exit_mode = SX126X_CAD_LBT;
+			ret = sx126x_set_cad_params(dev, dev->cad_param.sym_num, dev->cad_param.det_pek,
+										dev->cad_param.det_min, dev->cad_param.exit_mode,
+										dev->cad_param.timeout);
+
+			sx126x_start_cad_after_delay(dev, DELAY_MS_BEFORE_CAD);
 		} else {
 			sx126x_set_dio_irq_params(dev,
 									SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT,
@@ -1808,6 +1864,7 @@ static irqreturn_t sx126x_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+//#define SX126X_DEBUG_IRQ			1
 static void sx126x_irq_handler(struct work_struct *work)
 {
 	struct sx126x *data = container_of(work, struct sx126x, irq_work);
@@ -1881,16 +1938,46 @@ static void sx126x_irq_handler(struct work_struct *work)
 		if (irqflags & SX126X_IRQ_CAD_DETECTED) {
 			dev_info(data->chardevice, "CAD done, detected activity\n");
 
-			if (data->tx_active) {
-				/* radio is waitting for tx */
-
-				sx126x_set_tx(data, 200);
-
-				mdelay(500);
+			switch(data->cad_param.exit_mode) {
+				case SX126X_CAD_ONLY:
+					printk("Switch to STBY_RC mode\n");
+					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					break;
+				case SX126X_CAD_RX:
+					printk("Switch to RX mode\n");
+					sx126x_enter_rx(data);
+					break;
+				case SX126X_CAD_LBT:
+					printk("seek next win to tx\n");
+					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					break;
+				default:
+					printk("unknown cad exit mode\n");
+					break;
 			}
+
 
 		} else {
 			dev_info(data->chardevice, "CAD done, nothing detected\n");
+
+			switch(data->cad_param.exit_mode) {
+				case SX126X_CAD_ONLY:
+					printk("Switch to STBY_RC mode\n");
+					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					break;
+				case SX126X_CAD_RX:
+					printk("seek next win to rx\n");
+					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					break;
+				case SX126X_CAD_LBT:
+					printk("ch is ok, tx...\n");
+					/* radio is waitting for tx */
+					sx126x_set_tx(data, 200);
+					break;
+				default:
+					printk("unknown cad exit mode\n");
+					break;
+			}
 		}
 	}
 
