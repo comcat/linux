@@ -42,7 +42,9 @@
 #define SX126X_CLASSNAME	"sx126x"
 #define SX126X_DEVICENAME	"sx126x%d"
 
-#define MAX_PAYLOAD_LEN		128
+#define MIN_PAYLOAD_LEN				18
+#define MAX_PAYLOAD_LEN				128
+#define	SINGLE_RX_WIN_MS			500
 
 static int devmajor;
 static struct class *devclass;
@@ -195,6 +197,14 @@ typedef struct sx126x_cad_param_s
 #define DELAY_MS_BEFORE_CAD				900
 #define	CAD_TIMEOUT_MS					1000
 
+typedef enum sx126x_rx_mode_e
+{
+	SX126X_RX_CON	= 0x00,
+	SX126X_RX_SIN	= 0x01,
+	SX126X_RX_DUTY	= 0x02,
+	SX126X_RX_CAD	= 0x03,
+} sx126x_rx_mode_t;
+
 struct sx126x {
 	struct device *chardevice;
 	struct work_struct irq_work;
@@ -230,6 +240,10 @@ struct sx126x {
 	bool _ldro;
 
 	sx126x_cad_param_t cad_param;
+	sx126x_rx_mode_t rx_mode;
+
+	/* single rx window in ms */
+	u32 rx_win;
 
 	u32 cnt_crc_err;
 	u32 cnt_rx255;
@@ -385,9 +399,9 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 		dev->cnt_rx255 += 1;
 	}
 
-	//dev_warn(&(dev->spi->dev), "Rx FIFO: %d Bytes @ 0x%02x\n", rx_len, pktstart);
+	dev_warn(&(dev->spi->dev), "Rx FIFO: %d Bytes @ 0x%02x\n", rx_len, pktstart);
 
-	if (rx_len > 0 && rx_len <= MAX_PAYLOAD_LEN) {
+	if (rx_len >= MIN_PAYLOAD_LEN && rx_len <= MAX_PAYLOAD_LEN) {
 		/* buffer is ok */
 		for (off = 0; off < rx_len; off += maxtransfer) {
 
@@ -814,6 +828,21 @@ int sx126x_set_rx(struct sx126x *dev, uint32_t timeout)
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
 }
 
+int sx126x_set_rx_ms(struct sx126x *dev, uint32_t timeout_ms)
+{
+	uint8_t cmd[SX126X_SIZE_SET_RX];
+
+	uint32_t timeout = sx126x_convert_timeout_to_rtc_step(timeout_ms);
+
+	cmd[0] = SX126X_SET_RX;
+	cmd[1] = (uint8_t) ((timeout >> 16) & 0xFF);
+	cmd[2] = (uint8_t) ((timeout >> 8) & 0xFF);
+	cmd[3] = (uint8_t) (timeout & 0xFF);
+
+	sx126x_wait_on_busy(dev);
+	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
+}
+
 int sx126x_set_tx(struct sx126x *dev, uint32_t timeout_ms)
 {
 	uint8_t cmd[SX126X_SIZE_SET_TX];
@@ -827,6 +856,25 @@ int sx126x_set_tx(struct sx126x *dev, uint32_t timeout_ms)
 
 	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX);
+}
+
+int sx126x_set_rx_duty_cycle(struct sx126x *dev, uint32_t rx_win, uint32_t sleep_ms)
+{
+	uint8_t cmd[SX126X_SIZE_SET_RX_DUTY_CYCLE];
+
+	u32 rx_win_step = sx126x_convert_timeout_to_rtc_step(rx_win);
+	u32 sleep_ms_step = sx126x_convert_timeout_to_rtc_step(sleep_ms);
+
+	cmd[0] = SX126X_SET_RX_DUTY_CYCLE;
+	cmd[1] = (uint8_t) (rx_win_step >> 16);
+	cmd[2] = (uint8_t) (rx_win_step >> 8);
+	cmd[3] = (uint8_t) (rx_win_step >> 0);
+	cmd[4] = (uint8_t) (sleep_ms_step >> 16);
+	cmd[5] = (uint8_t) (sleep_ms_step >> 8);
+	cmd[6] = (uint8_t) (sleep_ms_step >> 0);
+
+	sx126x_wait_on_busy(dev);
+	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX_DUTY_CYCLE);
 }
 
 int sx126x_set_cad(struct sx126x *dev)
@@ -1121,6 +1169,9 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	data->cad_param.exit_mode = SX126X_CAD_ONLY;
 	data->cad_param.timeout = sx126x_convert_timeout_to_rtc_step(CAD_TIMEOUT_MS);
 
+	data->rx_mode = SX126X_RX_SIN;
+	data->rx_win = SINGLE_RX_WIN_MS;
+
 	/*
 	 * BW500:
 	 *  SF7: sym_num = 4, det_pek = 21, det_min = 10
@@ -1148,32 +1199,43 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	return ret;
 }
 
-bool sx126x_enter_rx(struct sx126x *data)
+bool sx126x_enter_rx(struct sx126x *dev)
 {
 	bool rv = false;
 
-	if (data->tx_active == false) {
+	if (dev->tx_active == false) {
 
 #if 0
-		sx126x_set_dio_irq_params(data,
+		sx126x_set_dio_irq_params(dev,
 						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
 						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
 						SX126X_IRQ_NONE,
 						SX126X_IRQ_NONE);
 #else
-		sx126x_set_dio_irq_params(data,
+		sx126x_set_dio_irq_params(dev,
 						SX126X_IRQ_ALL,
 						SX126X_IRQ_ALL,
 						SX126X_IRQ_NONE,
 						SX126X_IRQ_NONE);
 #endif
 
-		sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+		sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
 
-		/*
-		 * set Rx Continuous mode, but also generate the irq timeout
-		 */
-		sx126x_set_rx(data, 0xFFFFFF);
+		switch(dev->rx_mode) {
+			case SX126X_RX_SIN:
+				sx126x_set_rx_ms(dev, dev->rx_win);
+				break;
+			case SX126X_RX_DUTY:
+				//sx126x_set_rx_duty_cycle(dev, 1, 8);
+				sx126x_set_rx_duty_cycle(dev, 200, 8);
+				//sx126x_set_stop_rx_timer_on_preamble(dev, false);
+				break;
+			case SX126X_RX_CON:
+			default:
+				 /* set Rx Continuous mode, but also generate the irq timeout */
+				sx126x_set_rx(dev, 0xFFFFFF);
+				break;
+		}
 
 		rv = true;
 	} else {
@@ -1423,6 +1485,100 @@ static ssize_t sx126x_status_store(struct device *dev,
 
 static DEVICE_ATTR(status, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 		   sx126x_status_show, sx126x_status_store);
+
+static char *rmmap[] = {"RX_CON", "RX_SIN", "RX_DUTY", "RX_CAD"};
+
+static ssize_t sx126x_rx_mode_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	//dev_info(data->chardevice, "rx_mode: %d\n", data->rx_mode);
+
+	return sprintf(buf, "%s\n", rmmap[data->rx_mode]);
+}
+
+static ssize_t sx126x_rx_mode_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	mutex_lock(&data->mutex);
+
+	if (strcmp(buf, "RX_CON\n") == 0) {
+
+		dev_info(data->chardevice, "Enter rx continous\n");
+
+		data->rx_mode = SX126X_RX_CON;
+
+	} else if (strcmp(buf, "RX_SIN\n") == 0) {
+
+		dev_info(data->chardevice, "Enter rx single\n");
+
+		data->rx_mode = SX126X_RX_SIN;
+
+	} else if (strcmp(buf, "RX_DUTY\n") == 0) {
+
+		dev_info(data->chardevice, "Enter rx duty\n");
+
+		data->rx_mode = SX126X_RX_DUTY;
+
+	} else if (strcmp(buf, "RX_CAD\n") == 0) {
+
+		dev_info(data->chardevice, "Enter rx cad\n");
+
+		data->rx_mode = SX126X_RX_CAD;
+
+	} else {
+
+		dev_info(data->chardevice, "Unknown rx mode, enter rx single\n");
+
+		data->rx_mode = SX126X_RX_SIN;
+	}
+
+	sx126x_enter_rx(data);
+
+	mutex_unlock(&data->mutex);
+
+	return count;
+}
+
+static DEVICE_ATTR(rx_mode, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+		   sx126x_rx_mode_show, sx126x_rx_mode_store);
+
+static ssize_t sx126x_rx_win_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	return sprintf(buf, "%dms\n", data->rx_win);
+}
+
+static ssize_t sx126x_rx_win_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	u64 rx_win;
+
+	if (kstrtou64(buf, 10, &rx_win)) {
+		goto out;
+	}
+	mutex_lock(&data->mutex);
+
+	data->rx_win = rx_win;
+
+	sx126x_enter_rx(data);
+
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(rx_win, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+		   sx126x_rx_win_show, sx126x_rx_win_store);
 
 static ssize_t sx126x_freq_show(struct device *dev,
 					    struct device_attribute *attr,
@@ -1896,7 +2052,7 @@ static irqreturn_t sx126x_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-//#define SX126X_DEBUG_IRQ			1
+#define SX126X_DEBUG_IRQ			1
 static void sx126x_irq_handler(struct work_struct *work)
 {
 	struct sx126x *data = container_of(work, struct sx126x, irq_work);
@@ -1912,8 +2068,19 @@ static void sx126x_irq_handler(struct work_struct *work)
 	irqflags = sx126x_get_irq_status(data);
 
 #ifdef SX126X_DEBUG_IRQ
-	dev_info(&data->spi->dev, "irq state 0x%02X\n", (unsigned)irqflags);
+	dev_info(&data->spi->dev, "irq status: 0x%03X\n", (unsigned)irqflags);
 #endif
+
+	/* irq: 0x302 maybe read 3 Bytes pkt */
+
+	if (irqflags & SX126X_IRQ_TIMEOUT && !(irqflags & SX126X_IRQ_RX_DONE)) {
+
+		if (SX126X_RX_SIN == data->rx_mode) {
+			sx126x_set_rx_ms(data, data->rx_win);
+		}
+		//dev_info(data->chardevice, "Tx or Rx timeout\n");
+		//goto irq_out;
+	}
 
 	if (irqflags & SX126X_IRQ_RX_DONE) {
 
@@ -1927,6 +2094,8 @@ static void sx126x_irq_handler(struct work_struct *work)
 		sx126x_read_buf(data, buf, &len);
 
 		if (len > 0) {
+
+			/* [min_payload_len, max_payload_len] */
 
 			memset(&pkt, 0, sizeof(pkt));
 
@@ -1947,10 +2116,18 @@ static void sx126x_irq_handler(struct work_struct *work)
 			/* rx pkt number */
 			data->cnt_rx += 1;
 
-		#ifdef SX126X_DEBUG_IRQ
+			/* singe rx */
+			if (SX126X_RX_SIN == data->rx_mode) {
+				//sx126x_set_standby(data, SX126X_STANDBY_RC);
+			}
+
 		} else {
+		#ifdef SX126X_DEBUG_IRQ
 			dev_warn(data->chardevice, "payload len is 0\n");
 		#endif
+			if (SX126X_RX_SIN == data->rx_mode) {
+				sx126x_set_rx_ms(data, data->rx_win);
+			}
 		}
 	}
 
@@ -2013,7 +2190,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 		}
 	}
 
-#ifdef SX126X_DEBUG_IRQ
+#ifdef SX126X_DEBUG_IRQx
 	if (irqflags & SX126X_IRQ_HEADER_ERR) {
 
 		dev_warn(data->chardevice, "Header Error\n");
@@ -2022,12 +2199,6 @@ static void sx126x_irq_handler(struct work_struct *work)
 	if (irqflags & SX126X_IRQ_HEADER_VALID) {
 
 		dev_warn(data->chardevice, "Header Valid\n");
-	}
-
-	if (irqflags & SX126X_IRQ_TIMEOUT) {
-
-		dev_info(data->chardevice, "Tx or Rx timeout\n");
-
 	}
 #endif
 
@@ -2038,6 +2209,10 @@ irq_out:
 		dev_warn(data->chardevice, "CRC Error\n");
 	#endif
 		data->cnt_crc_err += 1;
+
+		if (SX126X_RX_SIN == data->rx_mode) {
+			sx126x_set_rx_ms(data, data->rx_win);
+		}
 	}
 
 	sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
@@ -2220,6 +2395,8 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_bw);
 	ret = device_create_file(data->chardevice, &dev_attr_cr);
 	ret = device_create_file(data->chardevice, &dev_attr_status);
+	ret = device_create_file(data->chardevice, &dev_attr_rx_mode);
+	ret = device_create_file(data->chardevice, &dev_attr_rx_win);
 
 	/////////////////////////
 	//for test
@@ -2271,6 +2448,8 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_bw);
 	device_remove_file(data->chardevice, &dev_attr_cr);
 	device_remove_file(data->chardevice, &dev_attr_status);
+	device_remove_file(data->chardevice, &dev_attr_rx_mode);
+	device_remove_file(data->chardevice, &dev_attr_rx_win);
 
 	device_destroy(devclass, data->devt);
 
