@@ -44,7 +44,13 @@
 
 #define MIN_PAYLOAD_LEN				18
 #define MAX_PAYLOAD_LEN				128
-#define	SINGLE_RX_WIN_MS			500
+
+#define DELAY_MS_BEFORE_CAD			900
+#define	CAD_TIMEOUT_MS				1000
+
+#define	SINGLE_RX_WIN_MS			200		// max payload 50 bytes
+#define	RX_DUTY_RX_PERIOD			200		// same as rx_single rx win
+#define	RX_DUTY_SLEEP_PERIOD		200		// suggest pre_len 108 symbol
 
 static int devmajor;
 static struct class *devclass;
@@ -194,9 +200,6 @@ typedef struct sx126x_cad_param_s
 	uint32_t                timeout;		// CAD timeout value
 } sx126x_cad_param_t;
 
-#define DELAY_MS_BEFORE_CAD				900
-#define	CAD_TIMEOUT_MS					1000
-
 typedef enum sx126x_rx_mode_e
 {
 	SX126X_RX_CON	= 0x00,
@@ -242,8 +245,13 @@ struct sx126x {
 	sx126x_cad_param_t cad_param;
 	sx126x_rx_mode_t rx_mode;
 
+	bool rx_boost;
+
 	/* single rx window in ms */
 	u32 rx_win;
+
+	/* rx duty sleep win in ms */
+	u32 rxduty_sleep;
 
 	u32 cnt_crc_err;
 	u32 cnt_rx255;
@@ -321,7 +329,7 @@ static int sx126x_read_reg(struct sx126x *dev, u16 reg, u8 *result, size_t len)
 	sx126x_wait_on_busy(dev);
 	ret = spi_write_then_read(dev->spi, cmd, SX126X_SIZE_READ_REGISTER, result, len);
 
-	dev_dbg(&dev->spi->dev, "read: @%02x %02x\n", reg, *result);
+	//dev_dbg(&dev->spi->dev, "read: @%02x %02x\n", reg, *result);
 	return ret;
 }
 
@@ -345,7 +353,7 @@ static int sx126x_write_reg(struct sx126x *dev, u16 reg, u8 *value, size_t len)
 	sx126x_wait_on_busy(dev);
 	spi_sync_transfer(dev->spi, fifotransfers, ARRAY_SIZE(fifotransfers));
 
-	dev_dbg(&dev->spi->dev, "write: @%02x %02x\n", reg, value[0]);
+	//dev_dbg(&dev->spi->dev, "write: @%02x %02x\n", reg, value[0]);
 
 	return ret;
 }
@@ -421,7 +429,6 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 				*len = 0;
 				return ret;
 			}
-
 		}
 
 		*len = rx_len;
@@ -663,8 +670,6 @@ int sx126x_set_dio3_as_tcxo_ctrl(struct sx126x *dev, uint8_t volt, uint32_t time
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_DIO3_AS_TCXO_CTRL);
 }
 
-
-
 int sx126x_set_dio2_as_rfswitch_ctrl(struct sx126x *dev, uint8_t enable)
 {
 	u8 cmd[2];
@@ -715,6 +720,18 @@ static int sx126x_set_lora_modulation_params(struct sx126x *dev, int8_t sf, uint
     }
 
     return ret;
+}
+
+static int sx126x_set_rx_boost(struct sx126x *dev, bool st)
+{
+	uint8_t reg_val = 0;
+	if (true == st) {
+		reg_val = 0x96;
+	} else {
+		reg_val = 0x94;
+	}
+
+	return sx126x_write_reg(dev, SX126X_REG_RXGAIN, &reg_val, 1);
 }
 
 /* 
@@ -839,6 +856,9 @@ int sx126x_set_rx_ms(struct sx126x *dev, uint32_t timeout_ms)
 	cmd[2] = (uint8_t) ((timeout >> 8) & 0xFF);
 	cmd[3] = (uint8_t) (timeout & 0xFF);
 
+	/* rx boosted gain, consumer more power and improve rx sensitivity */
+	sx126x_set_rx_boost(dev, dev->rx_boost);
+
 	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
 }
@@ -858,6 +878,13 @@ int sx126x_set_tx(struct sx126x *dev, uint32_t timeout_ms)
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX);
 }
 
+/*
+ * Need to reset when wakeup from sleep:
+ *  SX126X_REG_IQ_POLARITY		0x0736
+ *  SX126X_REG_TX_MODULATION	0x0889
+ *  SX126X_REG_RXGAIN			0x08AC
+ *
+*/
 int sx126x_set_rx_duty_cycle(struct sx126x *dev, uint32_t rx_win, uint32_t sleep_ms)
 {
 	uint8_t cmd[SX126X_SIZE_SET_RX_DUTY_CYCLE];
@@ -872,6 +899,12 @@ int sx126x_set_rx_duty_cycle(struct sx126x *dev, uint32_t rx_win, uint32_t sleep
 	cmd[4] = (uint8_t) (sleep_ms_step >> 16);
 	cmd[5] = (uint8_t) (sleep_ms_step >> 8);
 	cmd[6] = (uint8_t) (sleep_ms_step >> 0);
+
+	if (dev->rx_boost) {
+		sx126x_write_reg(dev, 0x029F, (uint8_t []){0x01}, 1);
+		sx126x_write_reg(dev, 0x02A0, (uint8_t []){0x08}, 1);
+		sx126x_write_reg(dev, 0x02A1, (uint8_t []){0xAC}, 1);
+	}
 
 	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX_DUTY_CYCLE);
@@ -1170,7 +1203,9 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 	data->cad_param.timeout = sx126x_convert_timeout_to_rtc_step(CAD_TIMEOUT_MS);
 
 	data->rx_mode = SX126X_RX_SIN;
+	data->rx_boost = true;
 	data->rx_win = SINGLE_RX_WIN_MS;
+	data->rxduty_sleep = RX_DUTY_SLEEP_PERIOD;
 
 	/*
 	 * BW500:
@@ -1202,43 +1237,43 @@ int sx126x_setup_v0(struct sx126x *data, uint32_t freq)
 bool sx126x_enter_rx(struct sx126x *dev)
 {
 	bool rv = false;
+	u16 irq_on = 0;
 
 	if (dev->tx_active == false) {
-
-#if 0
-		sx126x_set_dio_irq_params(dev,
-						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
-						SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
-						SX126X_IRQ_NONE,
-						SX126X_IRQ_NONE);
-#else
-		sx126x_set_dio_irq_params(dev,
-						SX126X_IRQ_ALL,
-						SX126X_IRQ_ALL,
-						SX126X_IRQ_NONE,
-						SX126X_IRQ_NONE);
-#endif
-
-		sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
 
 		switch(dev->rx_mode) {
 			case SX126X_RX_SIN:
 				sx126x_set_rx_ms(dev, dev->rx_win);
+				irq_on = SX126X_IRQ_ALL;
 				break;
 			case SX126X_RX_DUTY:
-				//sx126x_set_rx_duty_cycle(dev, 1, 8);
-				sx126x_set_rx_duty_cycle(dev, 200, 8);
-				//sx126x_set_stop_rx_timer_on_preamble(dev, false);
+				sx126x_set_standby(dev, SX126X_STANDBY_RC);
+				sx126x_set_rx_duty_cycle(dev, dev->rx_win, dev->rxduty_sleep);
+				sx126x_set_stop_rx_timer_on_preamble(dev, false);
+				//irq_on = SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR | SX126X_IRQ_HEADER_ERR;
+				irq_on = SX126X_IRQ_ALL;
 				break;
 			case SX126X_RX_CON:
 			default:
 				 /* set Rx Continuous mode, but also generate the irq timeout */
 				sx126x_set_rx(dev, 0xFFFFFF);
+				irq_on = SX126X_IRQ_ALL;
+				//irq_on = SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
 				break;
 		}
 
+		sx126x_set_dio_irq_params(dev,
+						irq_on,
+						irq_on,
+						SX126X_IRQ_NONE,
+						SX126X_IRQ_NONE);
+
+		sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
+
 		rv = true;
+
 	} else {
+
 		rv = false;
 	}
 
@@ -1552,7 +1587,7 @@ static ssize_t sx126x_rx_win_show(struct device *dev,
 					    char *buf)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	return sprintf(buf, "%dms\n", data->rx_win);
+	return sprintf(buf, "%d ms\n", data->rx_win);
 }
 
 static ssize_t sx126x_rx_win_store(struct device *dev,
@@ -1560,9 +1595,9 @@ static ssize_t sx126x_rx_win_store(struct device *dev,
 					     const char *buf, size_t count)
 {
 	struct sx126x *data = dev_get_drvdata(dev);
-	u64 rx_win;
+	u32 rx_win;
 
-	if (kstrtou64(buf, 10, &rx_win)) {
+	if (kstrtou32(buf, 10, &rx_win)) {
 		goto out;
 	}
 	mutex_lock(&data->mutex);
@@ -1579,6 +1614,72 @@ static ssize_t sx126x_rx_win_store(struct device *dev,
 
 static DEVICE_ATTR(rx_win, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 		   sx126x_rx_win_show, sx126x_rx_win_store);
+
+static ssize_t sx126x_rxduty_sleep_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	return sprintf(buf, "%d ms\n", data->rxduty_sleep);
+}
+
+static ssize_t sx126x_rxduty_sleep_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	u32 rxduty_sleep;
+
+	if (kstrtou32(buf, 10, &rxduty_sleep)) {
+		goto out;
+	}
+	mutex_lock(&data->mutex);
+
+	data->rxduty_sleep = rxduty_sleep;
+
+	sx126x_enter_rx(data);
+
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(rxduty_sleep, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+		   sx126x_rxduty_sleep_show, sx126x_rxduty_sleep_store);
+
+static ssize_t sx126x_rx_boost_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	return sprintf(buf, "%d\n", data->rx_boost);
+}
+
+static ssize_t sx126x_rx_boost_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	u32 rx_boost;
+
+	if (kstrtou32(buf, 10, &rx_boost)) {
+		goto out;
+	}
+	mutex_lock(&data->mutex);
+
+	data->rx_boost = rx_boost;
+
+	sx126x_enter_rx(data);
+
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(rx_boost, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+		   sx126x_rx_boost_show, sx126x_rx_boost_store);
 
 static ssize_t sx126x_freq_show(struct device *dev,
 					    struct device_attribute *attr,
@@ -2075,7 +2176,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 	if (irqflags & SX126X_IRQ_TIMEOUT && !(irqflags & SX126X_IRQ_RX_DONE)) {
 
-		if (SX126X_RX_SIN == data->rx_mode) {
+		if (SX126X_RX_SIN == data->rx_mode || SX126X_RX_DUTY == data->rx_mode) {
 			sx126x_set_rx_ms(data, data->rx_win);
 		}
 		//dev_info(data->chardevice, "Tx or Rx timeout\n");
@@ -2116,16 +2217,12 @@ static void sx126x_irq_handler(struct work_struct *work)
 			/* rx pkt number */
 			data->cnt_rx += 1;
 
-			/* singe rx */
-			if (SX126X_RX_SIN == data->rx_mode) {
-				//sx126x_set_standby(data, SX126X_STANDBY_RC);
-			}
-
 		} else {
 		#ifdef SX126X_DEBUG_IRQ
 			dev_warn(data->chardevice, "payload len is 0\n");
 		#endif
-			if (SX126X_RX_SIN == data->rx_mode) {
+			if (SX126X_RX_SIN == data->rx_mode || SX126X_RX_DUTY == data->rx_mode) {
+				/* incorrect pkt, re-rx */
 				sx126x_set_rx_ms(data, data->rx_win);
 			}
 		}
@@ -2190,15 +2287,19 @@ static void sx126x_irq_handler(struct work_struct *work)
 		}
 	}
 
-#ifdef SX126X_DEBUG_IRQx
+#if 1
 	if (irqflags & SX126X_IRQ_HEADER_ERR) {
 
-		dev_warn(data->chardevice, "Header Error\n");
+		//dev_warn(data->chardevice, "Header Error\n");
+
+		/* re-enter rx */
+		sx126x_enter_rx(data);
 	}
 
 	if (irqflags & SX126X_IRQ_HEADER_VALID) {
 
-		dev_warn(data->chardevice, "Header Valid\n");
+		//dev_warn(data->chardevice, "Header Valid\n");
+
 	}
 #endif
 
@@ -2397,6 +2498,8 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_status);
 	ret = device_create_file(data->chardevice, &dev_attr_rx_mode);
 	ret = device_create_file(data->chardevice, &dev_attr_rx_win);
+	ret = device_create_file(data->chardevice, &dev_attr_rxduty_sleep);
+	ret = device_create_file(data->chardevice, &dev_attr_rx_boost);
 
 	/////////////////////////
 	//for test
@@ -2450,6 +2553,8 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_status);
 	device_remove_file(data->chardevice, &dev_attr_rx_mode);
 	device_remove_file(data->chardevice, &dev_attr_rx_win);
+	device_remove_file(data->chardevice, &dev_attr_rxduty_sleep);
+	device_remove_file(data->chardevice, &dev_attr_rx_boost);
 
 	device_destroy(devclass, data->devt);
 
