@@ -409,7 +409,7 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
 		dev->cnt_rx255 += 1;
 	}
 
-	dev_warn(&(dev->spi->dev), "Rx FIFO: %d Bytes @ 0x%02x\n", rx_len, pktstart);
+	dev_warn(&(dev->spi->dev), "Rx: %d Bytes @ 0x%02x\n", rx_len, pktstart);
 
 	if (rx_len >= MIN_PAYLOAD_LEN && rx_len <= MAX_PAYLOAD_LEN) {
 		/* buffer is ok */
@@ -461,7 +461,7 @@ static int sx126x_write_buf(struct sx126x *data, void *buffer, size_t len)
 
 	dev_info(&data->spi->dev, "FIFO write: %d\n", len);
 
-	print_hex_dump(KERN_INFO, "tx: ", DUMP_PREFIX_NONE, 16, 1, buffer, len, true);
+	print_hex_dump(KERN_INFO, " | ", DUMP_PREFIX_NONE, 16, 1, buffer, len, true);
 
 	ret = spi_sync_transfer(data->spi, fifotransfers, ARRAY_SIZE(fifotransfers));
 
@@ -2083,10 +2083,12 @@ static int sx126x_dev_release(struct inode *inode, struct file *filp)
 
 	mutex_lock(&data->mutex);
 
-	//sx126x_set_opmode(data, SX126X_OPMODE_STANDBY, true);
+	sx126x_set_standby(data, SX126X_STANDBY_RC);
 
 	data->open = 0;
+
 	kfifo_reset(&data->out);
+
 	mutex_unlock(&data->mutex);
 
 	return 0;
@@ -2216,7 +2218,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 			kfifo_in(&data->out, buf, len);
 			wake_up(&data->readwq);
 
-			print_hex_dump(KERN_INFO, "rx: ", DUMP_PREFIX_NONE, 16, 1, buf, len, true);
+			print_hex_dump(KERN_INFO, " | ", DUMP_PREFIX_NONE, 16, 1, buf, len, true);
 
 			/* rx pkt number */
 			data->cnt_rx += 1;
