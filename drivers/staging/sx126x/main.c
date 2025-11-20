@@ -31,6 +31,8 @@
 #include "sx126x_regs.h"
 #include "sx126x.h"
 
+//#define SX126X_DEBUG_IRQ			1
+
 /*
  * F1C:
  *  SPI  - SPI1 (PA0 ~ PA3)
@@ -840,6 +842,9 @@ int sx126x_set_rx(struct sx126x *dev, uint32_t timeout)
 	cmd[1] = (uint8_t) ((timeout >> 16) & 0xFF);
 	cmd[2] = (uint8_t) ((timeout >> 8) & 0xFF);
 	cmd[3] = (uint8_t) (timeout & 0xFF);
+
+	/* rx boosted gain, consumer more power and improve rx sensitivity */
+	sx126x_set_rx_boost(dev, dev->rx_boost);
 
 	sx126x_wait_on_busy(dev);
 	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
@@ -2153,7 +2158,6 @@ static irqreturn_t sx126x_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-#define SX126X_DEBUG_IRQ			1
 static void sx126x_irq_handler(struct work_struct *work)
 {
 	struct sx126x *data = container_of(work, struct sx126x, irq_work);
@@ -2287,7 +2291,6 @@ static void sx126x_irq_handler(struct work_struct *work)
 		}
 	}
 
-#if 1
 	if (irqflags & SX126X_IRQ_HEADER_ERR) {
 
 		//dev_warn(data->chardevice, "Header Error\n");
@@ -2296,10 +2299,9 @@ static void sx126x_irq_handler(struct work_struct *work)
 		sx126x_enter_rx(data);
 	}
 
+#ifdef SX126X_DEBUG_IRQ
 	if (irqflags & SX126X_IRQ_HEADER_VALID) {
-
-		//dev_warn(data->chardevice, "Header Valid\n");
-
+		dev_warn(data->chardevice, "Header Valid\n");
 	}
 #endif
 
@@ -2469,7 +2471,7 @@ static int sx126x_probe(struct spi_device *spi)
 									  SX126X_DEVICENAME, minor);
 
 	if (IS_ERR(data->chardevice)) {
-		printk("<0>Failed to create char device\n");
+		dev_err(&spi->dev, "Failed to create char device\n");
 		ret = -ENOMEM;
 		goto err_createdevice;
 	}
@@ -2537,7 +2539,6 @@ static int sx126x_remove(struct spi_device *spi)
 {
 	struct sx126x *data = spi_get_drvdata(spi);
 
-	//device_remove_file(data->chardevice, &dev_attr_modulation);
 	device_remove_file(data->chardevice, &dev_attr_freq);
 	device_remove_file(data->chardevice, &dev_attr_rssi);
 	device_remove_file(data->chardevice, &dev_attr_cnt_crc_err);
@@ -2592,25 +2593,25 @@ static int __init sx126x_init(void)
 	ret = register_chrdev(0, SX126X_DRIVERNAME, &fops);
 
 	if (ret < 0) {
-		printk("Failed to register char device\n");
+		printk(KERN_ERR "Failed to register char device\n");
 		goto out;
 	}
 
 	devmajor = ret;
 
-	printk("dev_major = %d\n", devmajor);
+	printk(KERN_INFO "dev_major = %d\n", devmajor);
 
 	devclass = class_create(THIS_MODULE, SX126X_CLASSNAME);
 
 	if (!devclass) {
-		printk("Failed to register class\n");
+		printk(KERN_ERR "Failed to register class\n");
 		ret = -ENOMEM;
 		goto out1;
 	}
 
 	ret = spi_register_driver(&sx126x_driver);
 	if (ret) {
-		printk("Failed to register spi driver\n");
+		printk(KERN_ERR "Failed to register spi driver\n");
 		goto out2;
 	}
 
@@ -2622,7 +2623,7 @@ static int __init sx126x_init(void)
 	devclass = NULL;
 
  out:
-	printk("SX126x init OK");
+	printk(KERN_INFO "SX126x init OK");
 
 	return ret;
 }
