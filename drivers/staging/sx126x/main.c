@@ -31,7 +31,9 @@
 #include "sx126x_regs.h"
 #include "sx126x.h"
 
-//#define SX126X_DEBUG_IRQ			1
+#include "ccx.h"
+
+#define SX126X_DEBUG_IRQ			1
 
 /*
  * F1C:
@@ -47,12 +49,13 @@
 #define MIN_PAYLOAD_LEN				18
 #define MAX_PAYLOAD_LEN				128
 
-#define DELAY_MS_BEFORE_CAD			900
+#define DELAY_MS_BEFORE_CAD			500
 #define	CAD_TIMEOUT_MS				1000
+#define	TX_TIMEOUT_MS				800
 
-#define	SINGLE_RX_WIN_MS			200		// max payload 50 bytes
-#define	RX_DUTY_RX_PERIOD			200		// same as rx_single rx win
-#define	RX_DUTY_SLEEP_PERIOD		200		// suggest pre_len 108 symbol
+#define	SINGLE_RX_WIN_MS			230		// max payload 50 bytes
+#define	RX_DUTY_RX_PERIOD			230		// same as rx_single rx win
+#define	RX_DUTY_SLEEP_PERIOD		230		// suggest pre_len 108 symbol
 
 static int devmajor;
 static struct class *devclass;
@@ -254,6 +257,8 @@ struct sx126x {
 
 	/* rx duty sleep win in ms */
 	u32 rxduty_sleep;
+
+	u8 tx_buf[MAX_PAYLOAD_LEN];
 
 	u32 cnt_crc_err;
 	u32 cnt_rx255;
@@ -1327,7 +1332,67 @@ static void sx126x_start_cad_after_delay(struct sx126x *dev, uint16_t ms)
 	sx126x_set_cad(dev);
 }
 
-int sx126x_send(struct sx126x *dev, uint8_t *buf, size_t len, uint8_t mode)
+static int sx126x_send_tx_buf(struct sx126x *dev)
+{
+	int ret = -1;
+	size_t p_len = dev->tx_buf[3] + 6;
+
+	/* reset the devid */
+	dev->tx_buf[3] = 0;
+
+	update_crc(dev->tx_buf, p_len);
+
+	/* computer the crc and mic */
+
+	if (false == dev->tx_active) {
+		dev->tx_active = true;
+
+		ret = sx126x_set_lora_pkt_params(dev, p_len);
+
+		ret = sx126x_write_buf(dev, dev->tx_buf, p_len);
+
+        ret = sx126x_lora_tx_modulation_workaround(dev, dev->_bw);
+
+		if (dev->_cad_on) {
+			sx126x_set_dio_irq_params(dev,
+				//SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CAD_DETECTED | SX126X_IRQ_CAD_DONE,
+				//SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CAD_DETECTED | SX126X_IRQ_CAD_DONE,
+				SX126X_IRQ_ALL,
+				SX126X_IRQ_ALL,
+				SX126X_IRQ_NONE,
+				SX126X_IRQ_NONE);
+
+			sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
+
+			dev->cad_param.exit_mode = SX126X_CAD_LBT;
+			ret = sx126x_set_cad_params(dev, dev->cad_param.sym_num, dev->cad_param.det_pek,
+										dev->cad_param.det_min, dev->cad_param.exit_mode,
+										dev->cad_param.timeout);
+
+			sx126x_start_cad_after_delay(dev, DELAY_MS_BEFORE_CAD);
+
+		} else {
+			sx126x_set_dio_irq_params(dev,
+									SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT,
+									SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT,
+									SX126X_IRQ_NONE,
+									SX126X_IRQ_NONE);
+
+			sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
+
+			ret = sx126x_set_tx(dev, TX_TIMEOUT_MS);
+		}
+
+	} else {
+
+		dev_warn(dev->chardevice, "TX is active\n");
+		ret = -1;
+	}
+
+	return ret;
+}
+
+static int sx126x_send(struct sx126x *dev, uint8_t *buf, size_t len, uint8_t mode)
 {
 	int ret = -1;
 	u32 cnt_100us = 0;
@@ -1376,7 +1441,7 @@ int sx126x_send(struct sx126x *dev, uint8_t *buf, size_t len, uint8_t mode)
 
 			sx126x_clear_irq_status(dev, SX126X_IRQ_ALL);
 
-			ret = sx126x_set_tx(dev, 200);
+			ret = sx126x_set_tx(dev, TX_TIMEOUT_MS);
 
 			if (mode & SX126X_TXMODE_SYNC) {
 
@@ -1502,6 +1567,7 @@ static ssize_t sx126x_status_store(struct device *dev,
 	} else if (strcmp(buf, "TX\n") == 0) {
 
 		dev_info(data->chardevice, "Enter TX\n");
+		sx126x_send_tx_buf(data);
 
 	} else if (strcmp(buf, "FS\n") == 0) {
 
@@ -1685,6 +1751,89 @@ static ssize_t sx126x_rx_boost_store(struct device *dev,
 
 static DEVICE_ATTR(rx_boost, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 		   sx126x_rx_boost_show, sx126x_rx_boost_store);
+
+static ssize_t sx126x_tx_buf_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	int i, offset = 0;
+	size_t len = data->tx_buf[3];
+
+	//printk("%d\n", len);
+	//printk("len = %d\n", strlen(data->tx_buf));
+
+	for (i = 0; i < len; i++) {
+
+		//printk("%02x", data->tx_buf[i]);
+
+        offset += sprintf(buf + offset, "%02x", data->tx_buf[i]);
+
+		//printk("%s\n", buf);
+	}
+
+	buf[len*2] = '\n';
+
+	return len*2+1;
+}
+
+static ssize_t sx126x_tx_buf_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	char ci[3] = {0};
+
+	uint8_t tx_b;
+
+	int i = 0;
+
+	size_t d_len = strlen(buf) - 1;
+
+	uint8_t *p = data->tx_buf;
+
+	memset(data->tx_buf, 0, MAX_PAYLOAD_LEN);
+
+	//printk("%s", buf);
+
+	if (0 != d_len % 2) {
+		//printk("len = %d\n", strlen(buf));
+		dev_err(&data->spi->dev, "tx_len is incorrect: %d\n", d_len);
+		goto out;
+	}
+
+	while (buf[i] != 0 && buf[i] != '\n') {
+
+		ci[0] = buf[i];
+		ci[1] = buf[i+1];
+
+		//printk("%s", ci);
+		kstrtou8(ci, 16, &tx_b);
+
+		*p++ = tx_b;
+
+		i += 2;
+		//printk("%02X", tx_b);
+	}
+
+	/* save the pkt_len to dev_id */
+	data->tx_buf[3] = i/2;
+
+	mutex_lock(&data->mutex);
+
+	//sx126x_send(data, data->tx_buf, d_len+6, SX126X_TXMODE_SYNC);
+	sx126x_send_tx_buf(data);
+
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(tx_buf, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+		   sx126x_tx_buf_show, sx126x_tx_buf_store);
 
 static ssize_t sx126x_freq_show(struct device *dev,
 					    struct device_attribute *attr,
@@ -2180,10 +2329,28 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 	/* irq: 0x302 maybe read 3 Bytes pkt */
 
-	if (irqflags & SX126X_IRQ_TIMEOUT && !(irqflags & SX126X_IRQ_RX_DONE)) {
+	if (irqflags & SX126X_IRQ_TIMEOUT) {
 
-		if (SX126X_RX_SIN == data->rx_mode || SX126X_RX_DUTY == data->rx_mode) {
-			sx126x_set_rx_ms(data, data->rx_win);
+		if(!(irqflags & SX126X_IRQ_RX_DONE) && false == data->tx_active) {
+
+			if (SX126X_RX_SIN == data->rx_mode || SX126X_RX_DUTY == data->rx_mode) {
+				sx126x_set_rx_ms(data, data->rx_win);
+			}
+		}
+
+		if (!(irqflags & SX126X_IRQ_TX_DONE) && data->tx_active) {
+			/* cad timeout before tx or tx timeout, need to re-tx */
+
+			if (data->_cad_on) {
+				sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+				sx126x_set_cad(data);
+				dev_warn(data->chardevice, "timeout re-cad\n");
+				goto cad_out;
+
+			} else {
+				sx126x_set_tx(data, TX_TIMEOUT_MS);
+				dev_warn(data->chardevice, "re-tx\n");
+			}
 		}
 		//dev_info(data->chardevice, "Tx or Rx timeout\n");
 		//goto irq_out;
@@ -2253,15 +2420,19 @@ static void sx126x_irq_handler(struct work_struct *work)
 			switch(data->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
 					printk("Switch to STBY_RC mode\n");
-					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+					sx126x_set_cad(data);
+					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
 					printk("Switch to RX mode\n");
 					sx126x_enter_rx(data);
 					break;
 				case SX126X_CAD_LBT:
-					printk("seek next win to tx\n");
-					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					printk("Seek next win to tx\n");
+					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+					sx126x_set_cad(data);
+					goto cad_out;
 					break;
 				default:
 					printk("unknown cad exit mode\n");
@@ -2275,11 +2446,15 @@ static void sx126x_irq_handler(struct work_struct *work)
 			switch(data->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
 					printk("Switch to STBY_RC mode\n");
-					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+					sx126x_set_cad(data);
+					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
 					printk("seek next win to rx\n");
-					sx126x_start_cad_after_delay(data, DELAY_MS_BEFORE_CAD);
+					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+					sx126x_set_cad(data);
+					goto cad_out;
 					break;
 				case SX126X_CAD_LBT:
 					printk("ch is ok, tx...\n");
@@ -2310,9 +2485,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 irq_out:
 
 	if (irqflags & SX126X_IRQ_CRC_ERR) {
-	#ifdef SX126X_DEBUG_IRQ
-		dev_warn(data->chardevice, "CRC Error\n");
-	#endif
+		//dev_warn(data->chardevice, "CRC Error\n");
 		data->cnt_crc_err += 1;
 
 		if (SX126X_RX_SIN == data->rx_mode) {
@@ -2322,6 +2495,7 @@ irq_out:
 
 	sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
 
+cad_out:
 	mutex_unlock(&data->mutex);
 }
 
@@ -2504,6 +2678,7 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_rx_win);
 	ret = device_create_file(data->chardevice, &dev_attr_rxduty_sleep);
 	ret = device_create_file(data->chardevice, &dev_attr_rx_boost);
+	ret = device_create_file(data->chardevice, &dev_attr_tx_buf);
 
 	/////////////////////////
 	//for test
@@ -2558,6 +2733,7 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_rx_win);
 	device_remove_file(data->chardevice, &dev_attr_rxduty_sleep);
 	device_remove_file(data->chardevice, &dev_attr_rx_boost);
+	device_remove_file(data->chardevice, &dev_attr_tx_buf);
 
 	device_destroy(devclass, data->devt);
 
