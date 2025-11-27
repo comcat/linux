@@ -44,7 +44,7 @@
 */
 #define SX126X_DRIVERNAME	"sx126x"
 #define SX126X_CLASSNAME	"sx126x"
-#define SX126X_DEVICENAME	"sx126x%d"
+#define SX126X_DEVICENAME	"radio%d"
 
 #define MIN_PAYLOAD_LEN				18
 #define MAX_PAYLOAD_LEN				128
@@ -358,7 +358,7 @@ static int sx126x_write_reg(struct sx126x *dev, u16 reg, u8 *value, size_t len)
 	//print_hex_dump(KERN_DEBUG, NULL, DUMP_PREFIX_NONE, 16, 1, value, len, true);
 
 	sx126x_wait_on_busy(dev);
-	spi_sync_transfer(dev->spi, fifotransfers, ARRAY_SIZE(fifotransfers));
+	ret = spi_sync_transfer(dev->spi, fifotransfers, ARRAY_SIZE(fifotransfers));
 
 	//dev_dbg(&dev->spi->dev, "write: @%02x %02x\n", reg, value[0]);
 
@@ -610,7 +610,6 @@ int sx126x_set_lora_pkt_params(struct sx126x *dev, size_t pkt_len)
 			ret = sx126x_write_reg(dev, SX126X_REG_IQ_POLARITY, &reg_val, 1);
 		}
 	}
-    // WORKAROUND END
 
 	return ret;
 }
@@ -842,6 +841,7 @@ int sx126x_clear_irq_status(struct sx126x *dev, uint16_t irq)
 int sx126x_set_rx(struct sx126x *dev, uint32_t timeout)
 {
 	uint8_t cmd[SX126X_SIZE_SET_RX];
+	int ret;
 
 	cmd[0] = SX126X_SET_RX;
 	cmd[1] = (uint8_t) ((timeout >> 16) & 0xFF);
@@ -849,15 +849,20 @@ int sx126x_set_rx(struct sx126x *dev, uint32_t timeout)
 	cmd[3] = (uint8_t) (timeout & 0xFF);
 
 	/* rx boosted gain, consumer more power and improve rx sensitivity */
-	sx126x_set_rx_boost(dev, dev->rx_boost);
+	ret = sx126x_set_rx_boost(dev, dev->rx_boost);
 
-	sx126x_wait_on_busy(dev);
-	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
+	if (0 == ret) {
+		sx126x_wait_on_busy(dev);
+		ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
+	}
+
+	return ret;
 }
 
 int sx126x_set_rx_ms(struct sx126x *dev, uint32_t timeout_ms)
 {
 	uint8_t cmd[SX126X_SIZE_SET_RX];
+	int ret;
 
 	uint32_t timeout = sx126x_convert_timeout_to_rtc_step(timeout_ms);
 
@@ -867,10 +872,14 @@ int sx126x_set_rx_ms(struct sx126x *dev, uint32_t timeout_ms)
 	cmd[3] = (uint8_t) (timeout & 0xFF);
 
 	/* rx boosted gain, consumer more power and improve rx sensitivity */
-	sx126x_set_rx_boost(dev, dev->rx_boost);
+	ret = sx126x_set_rx_boost(dev, dev->rx_boost);
 
-	sx126x_wait_on_busy(dev);
-	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
+	if (0 == ret) {
+		sx126x_wait_on_busy(dev);
+		ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_RX);
+	}
+
+	return ret;
 }
 
 int sx126x_set_tx(struct sx126x *dev, uint32_t timeout_ms)
@@ -1068,16 +1077,21 @@ int sx126x_set_tx_power(struct sx126x *dev, int8_t dbm)
 		ret = sx126x_set_pa_config(dev, 0x04, 0x07, 0x00, 0x01);
 	}
 
-	ret = sx126x_set_over_current_protect(dev, 0x38);		// set max current to 140mA
-	//write_reg(SX126X_REG_OCP, 0x38);				// current max 160mA for the whole device
+	if (0 == ret) {
 
-	cmd[0] = SX126X_SET_TX_PARAMS;
-    cmd[1] = dbm;
-	cmd[2] = SX126X_PA_RAMP_200U;				// TCXO
-    // cmd[2] = RADIO_RAMP_20_US;				// XTAL
+		ret = sx126x_set_over_current_protect(dev, 0x38);		// set max current to 140mA
+		//write_reg(SX126X_REG_OCP, 0x38);				// current max 160mA for the whole device
 
-	sx126x_wait_on_busy(dev);
-    ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
+		cmd[0] = SX126X_SET_TX_PARAMS;
+		cmd[1] = dbm;
+		cmd[2] = SX126X_PA_RAMP_200U;				// TCXO
+		// cmd[2] = RADIO_RAMP_20_US;				// XTAL
+
+		if (0 == ret) {
+			sx126x_wait_on_busy(dev);
+			ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_TX_PARAMS);
+		}
+	}
 
 	return ret;
 }
@@ -1115,8 +1129,9 @@ int sx126x_set_syncword(struct sx126x *dev, u8 syncword)
 static int sx126x_set_freq(struct sx126x *dev, u32 freq)
 {
 	uint8_t cmd[SX126X_SIZE_SET_RF_FREQUENCY];
+	int ret;
 
-	sx126x_calibrate_image(dev, freq);
+	ret = sx126x_calibrate_image(dev, freq);
 
 	dev->_tx_freq = freq;
 
@@ -1130,8 +1145,12 @@ static int sx126x_set_freq(struct sx126x *dev, u32 freq)
 	cmd[3] = (uint8_t) ((freq >> 8) & 0xFF);
 	cmd[4] = (uint8_t) (freq & 0xFF);
 
-	sx126x_wait_on_busy(dev);
-	return spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
+	if (0 == ret) {
+		sx126x_wait_on_busy(dev);
+		ret = spi_write(dev->spi, cmd, SX126X_SIZE_SET_RF_FREQUENCY);
+	}
+
+	return ret;
 }
 
 int sx126x_set_dio_irq_params(struct sx126x *dev, u16 irq_mask, u16 dio1_mask,
@@ -1788,7 +1807,7 @@ static ssize_t sx126x_tx_buf_store(struct device *dev,
 
 	uint8_t tx_b;
 
-	int i = 0;
+	int i = 0, ret;
 
 	size_t d_len = strlen(buf) - 1;
 
@@ -1810,7 +1829,7 @@ static ssize_t sx126x_tx_buf_store(struct device *dev,
 		ci[1] = buf[i+1];
 
 		//printk("%s", ci);
-		kstrtou8(ci, 16, &tx_b);
+		ret = kstrtou8(ci, 16, &tx_b);
 
 		*p++ = tx_b;
 
@@ -2324,7 +2343,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 	irqflags = sx126x_get_irq_status(data);
 
 #ifdef SX126X_DEBUG_IRQ
-	dev_info(&data->spi->dev, "irq status: 0x%03X\n", (unsigned)irqflags);
+	dev_info(&data->spi->dev, "irq_st = 0x%03X\n", (unsigned)irqflags);
 #endif
 
 	/* irq: 0x302 maybe read 3 Bytes pkt */
@@ -2504,7 +2523,7 @@ static int sx126x_probe(struct spi_device *spi)
 	int ret = 0;
 	struct sx126x *data;
 	int irq;
-	unsigned minor;
+	int minor;
 
 	uint8_t buffer[2] = {0x00};
 
@@ -2641,7 +2660,12 @@ static int sx126x_probe(struct spi_device *spi)
 	// create the frontend device and stash it in the spi device
 	mutex_lock(&device_list_lock);
 
-	minor = 0;
+	minor = of_alias_get_id(spi->master->dev.of_node, "spi");
+	if (minor < 0) {
+		printk("Invalide dev num %d\n", minor);
+		minor = 0;
+	}
+
 	data->devt = MKDEV(devmajor, minor);
 	data->chardevice = device_create(devclass, &spi->dev, data->devt, data,
 									  SX126X_DEVICENAME, minor);
@@ -2683,7 +2707,8 @@ static int sx126x_probe(struct spi_device *spi)
 	/////////////////////////
 	//for test
 	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
-	sx126x_setup_v0(data, 472500000);
+	ret = sx126x_setup_v0(data, 472500000);
+	printk("setup_v0() = %d\n", ret);
 
 	/* syncword: 0x1412 after setup_v0() */
 	sx126x_read_reg(data, SX126X_REG_LR_SYNCWORD, buffer, 2);
@@ -2691,7 +2716,16 @@ static int sx126x_probe(struct spi_device *spi)
 
 	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
 	sx126x_enter_rx(data);
-	printk("%d: status = 0x%x\n", __LINE__, sx126x_get_status(data));
+
+	ret = sx126x_get_status(data);
+	printk("%d: status = 0x%x\n", __LINE__, ret);
+
+	if (ret == 0x2a) {
+		sx126x_enter_rx(data);
+	}
+
+	ret = sx126x_get_status(data);
+	printk("%d: status = 0x%x\n", __LINE__, ret);
 
 	return 0;
 
@@ -2744,12 +2778,10 @@ static int sx126x_remove(struct spi_device *spi)
 }
 
 static const struct of_device_id sx126x_of_match[] = {
-	{
-		.compatible = "semtech,sx126x",
-	},
+	{ .compatible = "idodo,cch" },
+	{ .compatible = "idodo,dch" },
 	{},
 };
-
 MODULE_DEVICE_TABLE(of, sx126x_of_match);
 
 static struct spi_driver sx126x_driver = {
