@@ -800,7 +800,7 @@ int sx126x_set_sleep(struct sx126x *dev, uint8_t cfg)
 uint16_t sx126x_get_irq_status(struct sx126x *dev)
 {
 	uint8_t cmd[2];
-	uint8_t data[2];
+	uint8_t data[2] = {0};
 
 	cmd[0] = SX126X_GET_IRQ_STATUS;
 	cmd[1] = SX126X_NOP;
@@ -1954,6 +1954,41 @@ static ssize_t sx126x_pre_len_store(struct device *dev,
 static DEVICE_ATTR(pre_len, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, sx126x_pre_len_show,
 		   sx126x_pre_len_store);
 
+static ssize_t sx126x_irq_st_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+
+	u16 irq = sx126x_get_irq_status(data);
+
+	return sprintf(buf, "0x%03X\n", irq);
+}
+
+static ssize_t sx126x_irq_st_store(struct device *dev,
+			       struct device_attribute *attr, const char *buf,
+			       size_t count)
+{
+	struct sx126x *data = dev_get_drvdata(dev);
+	int irq_st;
+	if (kstrtoint(buf, 10, &irq_st)) {
+		goto out;
+	}
+
+	dev_info(data->chardevice, "clear irq\n");
+
+	mutex_lock(&data->mutex);
+
+	sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+
+	mutex_unlock(&data->mutex);
+
+ out:
+	return count;
+}
+
+static DEVICE_ATTR(irq_st, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, sx126x_irq_st_show,
+		   sx126x_irq_st_store);
+
 static ssize_t sx126x_cad_on_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
@@ -2326,13 +2361,6 @@ static void sx126x_irq_handler(struct work_struct *work)
 {
 	struct sx126x *d = container_of(work, struct sx126x, irq_work);
 
-	/*
-	uint8_t buf[MAX_PAYLOAD_LEN], len;
-	struct sx126x_pkt pkt;
-
-	uint16_t irqflags;
-	*/
-
 	mutex_lock(&d->mutex);
 
 	d->irq_st = sx126x_get_irq_status(d);
@@ -2686,6 +2714,7 @@ static int sx126x_probe(struct spi_device *spi)
 	ret = device_create_file(data->chardevice, &dev_attr_cad_on);
 	ret = device_create_file(data->chardevice, &dev_attr_dbm);
 	ret = device_create_file(data->chardevice, &dev_attr_pre_len);
+	ret = device_create_file(data->chardevice, &dev_attr_irq_st);
 
 	// these are LoRa specifc
 	ret = device_create_file(data->chardevice, &dev_attr_sf);
@@ -2754,6 +2783,7 @@ static int sx126x_remove(struct spi_device *spi)
 	device_remove_file(data->chardevice, &dev_attr_cad_on);
 	device_remove_file(data->chardevice, &dev_attr_dbm);
 	device_remove_file(data->chardevice, &dev_attr_pre_len);
+	device_remove_file(data->chardevice, &dev_attr_irq_st);
 
 	device_remove_file(data->chardevice, &dev_attr_sf);
 	device_remove_file(data->chardevice, &dev_attr_bw);
