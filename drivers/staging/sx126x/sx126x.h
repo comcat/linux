@@ -227,8 +227,7 @@ struct sx126x_pkt {
 	size_t hdrlen;
 	size_t payloadlen;
 
-	int rssi;
-	int crcfail;
+	int16_t rssi;
 } __attribute__((packed));
 
 #endif

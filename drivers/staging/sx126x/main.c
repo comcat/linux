@@ -33,7 +33,7 @@
 
 #include "ccx.h"
 
-#define SX126X_DEBUG_IRQ			1
+//#define SX126X_DEBUG_IRQ			1
 
 /*
  * F1C:
@@ -258,8 +258,16 @@ struct sx126x {
 	/* rx duty sleep win in ms */
 	u32 rxduty_sleep;
 
+	/* used by rx irq  */
+	u8 irq_buf[MAX_PAYLOAD_LEN];
+	size_t irq_plen;
+	int16_t irq_rssi;
+	struct sx126x_pkt irq_pkt;
+	uint16_t irq_st;
+
 	u8 tx_buf[MAX_PAYLOAD_LEN];
 
+	/* rx cnt */
 	u32 cnt_crc_err;
 	u32 cnt_rx255;
 	u32 cnt_rx;
@@ -399,7 +407,7 @@ static int sx126x_get_rxbuf_status(struct sx126x *dev, uint8_t *plen, uint8_t *r
 	return ret;
 }
 
-static int sx126x_read_buf(struct sx126x *dev, void *buffer, u8 *len)
+static int sx126x_read_buf(struct sx126x *dev, void *buffer, size_t *len)
 {
 	u8 pktstart, rx_len, off, fifoaddr;
 	u8 ptx[3];
@@ -475,20 +483,6 @@ static int sx126x_write_buf(struct sx126x *data, void *buffer, size_t len)
 	//}
 	return ret;
 }
-
-#if 0
-static int sx126x_indexofstring(const char *str, const char **options,
-				unsigned noptions)
-{
-	int i;
-	for (i = 0; i < noptions; i++) {
-		if (sysfs_streq(str, options[i])) {
-			return i;
-		}
-	}
-	return -1;
-}
-#endif
 
 static int sx126x_get_rssi_inst(struct sx126x *dev, int16_t *rssi)
 {
@@ -1315,7 +1309,7 @@ bool sx126x_enter_rx(struct sx126x *dev)
  *  -3: crc error
  *  -4: unknown interrupt
 */
-int sx126x_get_rx_pkt(struct sx126x *data, u8 *pkt, u8 len)
+int sx126x_get_rx_pkt(struct sx126x *data, u8 *pkt, size_t len)
 {
 	int rx_len = 0;
 	uint16_t irq = sx126x_get_irq_status(data);
@@ -2330,127 +2324,126 @@ static irqreturn_t sx126x_irq(int irq, void *dev_id)
 
 static void sx126x_irq_handler(struct work_struct *work)
 {
-	struct sx126x *data = container_of(work, struct sx126x, irq_work);
+	struct sx126x *d = container_of(work, struct sx126x, irq_work);
 
-	uint8_t buf[MAX_PAYLOAD_LEN], len = 0;
-	int16_t rssi = 0;
+	/*
+	uint8_t buf[MAX_PAYLOAD_LEN], len;
 	struct sx126x_pkt pkt;
 
 	uint16_t irqflags;
+	*/
 
-	mutex_lock(&data->mutex);
+	mutex_lock(&d->mutex);
 
-	irqflags = sx126x_get_irq_status(data);
+	d->irq_st = sx126x_get_irq_status(d);
 
-#ifdef SX126X_DEBUG_IRQ
-	dev_info(&data->spi->dev, "irq_st = 0x%03X\n", (unsigned)irqflags);
-#endif
+//#ifdef SX126X_DEBUG_IRQ
+	dev_info(&d->spi->dev, "irq_st = 0x%03X\n", (unsigned)d->irq_st);
+//#endif
 
 	/* irq: 0x302 maybe read 3 Bytes pkt */
 
-	if (irqflags & SX126X_IRQ_TIMEOUT) {
+	if (d->irq_st & SX126X_IRQ_TIMEOUT) {
 
-		if(!(irqflags & SX126X_IRQ_RX_DONE) && false == data->tx_active) {
+		if(!(d->irq_st & SX126X_IRQ_RX_DONE) && false == d->tx_active) {
 
-			if (SX126X_RX_SIN == data->rx_mode || SX126X_RX_DUTY == data->rx_mode) {
-				sx126x_set_rx_ms(data, data->rx_win);
+			if (SX126X_RX_SIN == d->rx_mode || SX126X_RX_DUTY == d->rx_mode) {
+				sx126x_set_rx_ms(d, d->rx_win);
 			}
 		}
 
-		if (!(irqflags & SX126X_IRQ_TX_DONE) && data->tx_active) {
+		if (!(d->irq_st & SX126X_IRQ_TX_DONE) && d->tx_active) {
 			/* cad timeout before tx or tx timeout, need to re-tx */
 
-			if (data->_cad_on) {
-				sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
-				sx126x_set_cad(data);
-				dev_warn(data->chardevice, "timeout re-cad\n");
+			if (d->_cad_on) {
+				sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
+				sx126x_set_cad(d);
+				dev_warn(d->chardevice, "timeout re-cad\n");
 				goto cad_out;
 
 			} else {
-				sx126x_set_tx(data, TX_TIMEOUT_MS);
-				dev_warn(data->chardevice, "re-tx\n");
+				sx126x_set_tx(d, TX_TIMEOUT_MS);
+				dev_warn(d->chardevice, "re-tx\n");
 			}
 		}
-		//dev_info(data->chardevice, "Tx or Rx timeout\n");
+		//dev_info(d->chardevice, "Tx or Rx timeout\n");
 		//goto irq_out;
 	}
 
-	if (irqflags & SX126X_IRQ_RX_DONE) {
+	if (d->irq_st & SX126X_IRQ_RX_DONE) {
 
-		if (irqflags & SX126X_IRQ_CRC_ERR) {
-			dev_warn(data->chardevice, "crc err\n");
+		if (d->irq_st & SX126X_IRQ_CRC_ERR) {
+			dev_warn(d->chardevice, "crc err\n");
 			goto irq_out;
 		}
 
-		memset(buf, 0, MAX_PAYLOAD_LEN);
+		memset(d->irq_buf, 0, MAX_PAYLOAD_LEN);
 
-		sx126x_read_buf(data, buf, &len);
+		sx126x_read_buf(d, d->irq_buf, &d->irq_plen);
 
-		if (len > 0) {
+		if (d->irq_plen > 0) {
 
 			/* [min_payload_len, max_payload_len] */
 
-			memset(&pkt, 0, sizeof(pkt));
+			memset(&d->irq_pkt, 0, sizeof(d->irq_pkt));
 
-			pkt.hdrlen = sizeof(pkt);
-			pkt.payloadlen = len;
-			pkt.len = pkt.hdrlen + pkt.payloadlen;
+			d->irq_pkt.hdrlen = sizeof(d->irq_pkt);
+			d->irq_pkt.payloadlen = d->irq_plen;
+			d->irq_pkt.len = d->irq_pkt.hdrlen + d->irq_pkt.payloadlen;
 
-			sx126x_get_rssi_inst(data, &rssi);
+			sx126x_get_rssi_inst(d, &(d->irq_pkt.rssi));
 
-			pkt.rssi = rssi;
+			kfifo_in(&d->out, &d->irq_pkt, sizeof(d->irq_pkt));
+			kfifo_in(&d->out, d->irq_buf, d->irq_plen);
+			wake_up(&d->readwq);
 
-			kfifo_in(&data->out, &pkt, sizeof(pkt));
-			kfifo_in(&data->out, buf, len);
-			wake_up(&data->readwq);
-
-			print_hex_dump(KERN_INFO, " | ", DUMP_PREFIX_NONE, 16, 1, buf, len, true);
+			print_hex_dump(KERN_INFO, " | ", DUMP_PREFIX_NONE, 16, 1, d->irq_buf, d->irq_plen, true);
 
 			/* rx pkt number */
-			data->cnt_rx += 1;
+			d->cnt_rx += 1;
 
 		} else {
 		#ifdef SX126X_DEBUG_IRQ
-			dev_warn(data->chardevice, "payload len is 0\n");
+			dev_warn(d->chardevice, "payload len is 0\n");
 		#endif
-			if (SX126X_RX_SIN == data->rx_mode || SX126X_RX_DUTY == data->rx_mode) {
+			if (SX126X_RX_SIN == d->rx_mode || SX126X_RX_DUTY == d->rx_mode) {
 				/* incorrect pkt, re-rx */
-				sx126x_set_rx_ms(data, data->rx_win);
+				sx126x_set_rx_ms(d, d->rx_win);
 			}
 		}
 	}
 
-	if (irqflags & SX126X_IRQ_TX_DONE) {
+	if (d->irq_st & SX126X_IRQ_TX_DONE) {
 
-		dev_warn(data->chardevice, "transmitted packet\n");
+		dev_warn(d->chardevice, "transmitted packet\n");
 
-		data->transmitted = 1;
+		d->transmitted = 1;
 
-		data->tx_active = false;
+		d->tx_active = false;
 
-		wake_up(&data->writewq);
+		wake_up(&d->writewq);
 	}
 
-	if (irqflags & SX126X_IRQ_CAD_DONE) {
+	if (d->irq_st & SX126X_IRQ_CAD_DONE) {
 
-		if (irqflags & SX126X_IRQ_CAD_DETECTED) {
-			dev_info(data->chardevice, "CAD done, detected activity\n");
+		if (d->irq_st & SX126X_IRQ_CAD_DETECTED) {
+			dev_info(d->chardevice, "CAD done, detected activity\n");
 
-			switch(data->cad_param.exit_mode) {
+			switch(d->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
 					printk("Switch to STBY_RC mode\n");
-					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
-					sx126x_set_cad(data);
+					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
+					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
 					printk("Switch to RX mode\n");
-					sx126x_enter_rx(data);
+					sx126x_enter_rx(d);
 					break;
 				case SX126X_CAD_LBT:
 					printk("Seek next win to tx\n");
-					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
-					sx126x_set_cad(data);
+					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
+					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				default:
@@ -2460,25 +2453,25 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 
 		} else {
-			dev_info(data->chardevice, "CAD done, nothing detected\n");
+			dev_info(d->chardevice, "CAD done, nothing detected\n");
 
-			switch(data->cad_param.exit_mode) {
+			switch(d->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
 					printk("Switch to STBY_RC mode\n");
-					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
-					sx126x_set_cad(data);
+					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
+					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
 					printk("seek next win to rx\n");
-					sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
-					sx126x_set_cad(data);
+					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
+					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_LBT:
 					printk("ch is ok, tx...\n");
 					/* radio is waitting for tx */
-					sx126x_set_tx(data, 200);
+					sx126x_set_tx(d, 200);
 					break;
 				default:
 					printk("unknown cad exit mode\n");
@@ -2487,35 +2480,35 @@ static void sx126x_irq_handler(struct work_struct *work)
 		}
 	}
 
-	if (irqflags & SX126X_IRQ_HEADER_ERR) {
+	if (d->irq_st & SX126X_IRQ_HEADER_ERR) {
 
-		//dev_warn(data->chardevice, "Header Error\n");
+		//dev_warn(d->chardevice, "Header Error\n");
 
 		/* re-enter rx */
-		sx126x_enter_rx(data);
+		sx126x_enter_rx(d);
 	}
 
 #ifdef SX126X_DEBUG_IRQ
-	if (irqflags & SX126X_IRQ_HEADER_VALID) {
-		dev_warn(data->chardevice, "Header Valid\n");
+	if (d->irq_st & SX126X_IRQ_HEADER_VALID) {
+		dev_warn(d->chardevice, "Header Valid\n");
 	}
 #endif
 
 irq_out:
 
-	if (irqflags & SX126X_IRQ_CRC_ERR) {
-		//dev_warn(data->chardevice, "CRC Error\n");
-		data->cnt_crc_err += 1;
+	if (d->irq_st & SX126X_IRQ_CRC_ERR) {
+		//dev_warn(d->chardevice, "CRC Error\n");
+		d->cnt_crc_err += 1;
 
-		if (SX126X_RX_SIN == data->rx_mode) {
-			sx126x_set_rx_ms(data, data->rx_win);
+		if (SX126X_RX_SIN == d->rx_mode) {
+			sx126x_set_rx_ms(d, d->rx_win);
 		}
 	}
 
-	sx126x_clear_irq_status(data, SX126X_IRQ_ALL);
+	sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 
 cad_out:
-	mutex_unlock(&data->mutex);
+	mutex_unlock(&d->mutex);
 }
 
 static int sx126x_probe(struct spi_device *spi)
@@ -2564,7 +2557,8 @@ static int sx126x_probe(struct spi_device *spi)
 		data->gpio_swctrl = NULL;
 	} else {
 		/* enable the swctrl */
-		gpiod_set_value(data->gpio_swctrl, 1);
+		gpiod_direction_output(data->gpio_swctrl, 1);
+		//gpiod_set_value(data->gpio_swctrl, 1);
 	}
 
 	// get the busy gpios
@@ -2726,6 +2720,8 @@ static int sx126x_probe(struct spi_device *spi)
 
 	ret = sx126x_get_status(data);
 	printk("%d: status = 0x%x\n", __LINE__, ret);
+
+    //printk("swctrl = %d\n", gpiod_get_value(data->gpio_swctrl));
 
 	return 0;
 
