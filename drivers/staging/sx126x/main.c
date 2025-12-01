@@ -34,7 +34,6 @@
 #include "ccx.h"
 
 //#define SX126X_DEBUG_IRQ			1
-
 /*
  * F1C:
  *  SPI  - SPI1 (PA0 ~ PA3)
@@ -224,6 +223,8 @@ struct sx126x {
 	struct list_head device_entry;
 	dev_t devt;
 	bool open;
+
+	int dev_num;
 
 	/* device state */
 	//enum sx126x_opmode opmode;
@@ -422,7 +423,7 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, size_t *len)
 		dev->cnt_rx255 += 1;
 	}
 
-	dev_warn(&(dev->spi->dev), "Rx: %d Bytes @ 0x%02x\n", rx_len, pktstart);
+	dev_info(&(dev->spi->dev), "Rx: %d Bytes @ 0x%02x\n", rx_len, pktstart);
 
 	if (rx_len >= MIN_PAYLOAD_LEN && rx_len <= MAX_PAYLOAD_LEN) {
 		/* buffer is ok */
@@ -1280,8 +1281,14 @@ bool sx126x_enter_rx(struct sx126x *dev)
 			default:
 				 /* set Rx Continuous mode, but also generate the irq timeout */
 				sx126x_set_rx(dev, 0xFFFFFF);
-				irq_on = SX126X_IRQ_ALL;
-				//irq_on = SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR,
+				//irq_on = SX126X_IRQ_ALL;
+				#if 0
+				irq_on = SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR |
+							SX126X_IRQ_PREAMBLE_DETECTED | SX126X_IRQ_HEADER_VALID |
+							SX126X_IRQ_HEADER_ERR;
+				#endif
+				irq_on = SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR |
+							SX126X_IRQ_PREAMBLE_DETECTED | SX126X_IRQ_HEADER_ERR;
 				break;
 		}
 
@@ -2365,11 +2372,16 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 	d->irq_st = sx126x_get_irq_status(d);
 
-//#ifdef SX126X_DEBUG_IRQ
+	/* irq: 0x076 or 0x066 are incorrect state */
+
 	dev_info(&d->spi->dev, "irq_st = 0x%03X\n", (unsigned)d->irq_st);
-//#endif
 
 	/* irq: 0x302 maybe read 3 Bytes pkt */
+
+	if (SX126X_IRQ_PREAMBLE_DETECTED == d->irq_st) {
+		//printk(KERN_DEBUG"spi%d.0: goto out\n", d->dev_num);
+		goto cad_out;
+	}
 
 	if (d->irq_st & SX126X_IRQ_TIMEOUT) {
 
@@ -2401,7 +2413,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 	if (d->irq_st & SX126X_IRQ_RX_DONE) {
 
 		if (d->irq_st & SX126X_IRQ_CRC_ERR) {
-			dev_warn(d->chardevice, "crc err\n");
+			//printk(KERN_DEBUG"spi%d.0: crc err\n", d->dev_num);
 			goto irq_out;
 		}
 
@@ -2425,7 +2437,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 			kfifo_in(&d->out, d->irq_buf, d->irq_plen);
 			wake_up(&d->readwq);
 
-			print_hex_dump(KERN_INFO, " | ", DUMP_PREFIX_NONE, 16, 1, d->irq_buf, d->irq_plen, true);
+			print_hex_dump(KERN_DEBUG, " | ", DUMP_PREFIX_NONE, 16, 1, d->irq_buf, d->irq_plen, true);
 
 			/* rx pkt number */
 			d->cnt_rx += 1;
@@ -2459,23 +2471,23 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 			switch(d->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
-					printk("Switch to STBY_RC mode\n");
+					dev_info(d->chardevice, "Switch to STBY_RC mode\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
-					printk("Switch to RX mode\n");
+					dev_info(d->chardevice, "Switch to RX mode\n");
 					sx126x_enter_rx(d);
 					break;
 				case SX126X_CAD_LBT:
-					printk("Seek next win to tx\n");
+					dev_info(d->chardevice, "Seek next win to tx\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				default:
-					printk("unknown cad exit mode\n");
+					dev_info(d->chardevice, "unknown cad exit mode\n");
 					break;
 			}
 
@@ -2485,35 +2497,27 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 			switch(d->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
-					printk("Switch to STBY_RC mode\n");
+					dev_info(d->chardevice, "Switch to STBY_RC mode\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
-					printk("seek next win to rx\n");
+					dev_info(d->chardevice, "seek next win to rx\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_LBT:
-					printk("ch is ok, tx...\n");
+					dev_info(d->chardevice, "ch is ok, tx...\n");
 					/* radio is waitting for tx */
 					sx126x_set_tx(d, 200);
 					break;
 				default:
-					printk("unknown cad exit mode\n");
+					dev_info(d->chardevice, "unknown cad exit mode\n");
 					break;
 			}
 		}
-	}
-
-	if (d->irq_st & SX126X_IRQ_HEADER_ERR) {
-
-		//dev_warn(d->chardevice, "Header Error\n");
-
-		/* re-enter rx */
-		sx126x_enter_rx(d);
 	}
 
 #ifdef SX126X_DEBUG_IRQ
@@ -2525,7 +2529,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 irq_out:
 
 	if (d->irq_st & SX126X_IRQ_CRC_ERR) {
-		//dev_warn(d->chardevice, "CRC Error\n");
+
 		d->cnt_crc_err += 1;
 
 		if (SX126X_RX_SIN == d->rx_mode) {
@@ -2533,9 +2537,16 @@ irq_out:
 		}
 	}
 
-	sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
+	if (d->irq_st & SX126X_IRQ_HEADER_ERR) {
+
+		/* re-enter rx */
+		sx126x_enter_rx(d);
+	}
 
 cad_out:
+
+	sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
+
 	mutex_unlock(&d->mutex);
 }
 
@@ -2687,6 +2698,8 @@ static int sx126x_probe(struct spi_device *spi)
 		printk("Invalide dev num %d\n", minor);
 		minor = 0;
 	}
+
+	data->dev_num = minor;
 
 	data->devt = MKDEV(devmajor, minor);
 	data->chardevice = device_create(devclass, &spi->dev, data->devt, data,
