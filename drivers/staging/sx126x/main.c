@@ -2380,7 +2380,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 	if (SX126X_IRQ_PREAMBLE_DETECTED == d->irq_st) {
 		//printk(KERN_DEBUG"spi%d.0: goto out\n", d->dev_num);
-		goto cad_out;
+		goto clr_out;
 	}
 
 	if (d->irq_st & SX126X_IRQ_TIMEOUT) {
@@ -2455,7 +2455,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 	if (d->irq_st & SX126X_IRQ_TX_DONE) {
 
-		dev_warn(d->chardevice, "transmitted packet\n");
+		dev_warn(d->chardevice, "TX OK.\n");
 
 		d->transmitted = 1;
 
@@ -2467,27 +2467,27 @@ static void sx126x_irq_handler(struct work_struct *work)
 	if (d->irq_st & SX126X_IRQ_CAD_DONE) {
 
 		if (d->irq_st & SX126X_IRQ_CAD_DETECTED) {
-			dev_info(d->chardevice, "CAD done, detected activity\n");
+			dev_warn(d->chardevice, "CAD done, detected activity\n");
 
 			switch(d->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
-					dev_info(d->chardevice, "Switch to STBY_RC mode\n");
+					dev_warn(d->chardevice, "Switch to STBY_RC mode\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
-					dev_info(d->chardevice, "Switch to RX mode\n");
+					dev_warn(d->chardevice, "Switch to RX mode\n");
 					sx126x_enter_rx(d);
 					break;
 				case SX126X_CAD_LBT:
-					dev_info(d->chardevice, "Seek next win to tx\n");
+					dev_warn(d->chardevice, "Seek next win to tx\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				default:
-					dev_info(d->chardevice, "unknown cad exit mode\n");
+					dev_warn(d->chardevice, "unknown cad exit mode\n");
 					break;
 			}
 
@@ -2497,24 +2497,24 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 			switch(d->cad_param.exit_mode) {
 				case SX126X_CAD_ONLY:
-					dev_info(d->chardevice, "Switch to STBY_RC mode\n");
+					dev_warn(d->chardevice, "Switch to STBY_RC mode\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_RX:
-					dev_info(d->chardevice, "seek next win to rx\n");
+					dev_warn(d->chardevice, "seek next win to rx\n");
 					sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 					sx126x_set_cad(d);
 					goto cad_out;
 					break;
 				case SX126X_CAD_LBT:
-					dev_info(d->chardevice, "ch is ok, tx...\n");
+					dev_warn(d->chardevice, "ch is ok, tx...\n");
 					/* radio is waitting for tx */
 					sx126x_set_tx(d, 200);
 					break;
 				default:
-					dev_info(d->chardevice, "unknown cad exit mode\n");
+					dev_warn(d->chardevice, "unknown cad exit mode\n");
 					break;
 			}
 		}
@@ -2543,10 +2543,10 @@ irq_out:
 		sx126x_enter_rx(d);
 	}
 
-cad_out:
-
+clr_out:
 	sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 
+cad_out:
 	mutex_unlock(&d->mutex);
 }
 
