@@ -217,6 +217,13 @@ enum sx126x_opmode {
 	SX126X_OPMODE_CAD
 };
 
+/* chip mode of status */
+#define	SX126X_CMODE_STBY_RC			2
+#define	SX126X_CMODE_STBY_XOSC			3
+#define	SX126X_CMODE_FS					4
+#define	SX126X_CMODE_RX					5
+#define	SX126X_CMODE_TX					6
+
 enum sx126x_pa {
 	SX126X_PA_RFO,
 	SX126X_PA_PABOOST

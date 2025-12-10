@@ -27,12 +27,14 @@
 #include <linux/kfifo.h>
 #include <linux/wait.h>
 #include <linux/uaccess.h>
+#include <linux/ktime.h>
 
 #include "sx126x_regs.h"
 #include "sx126x.h"
 
 #include "ccx.h"
 
+//#define	SX126X_SHOW_IRQ_TIME		1
 //#define SX126X_DEBUG_IRQ			1
 /*
  * F1C:
@@ -424,7 +426,7 @@ static int sx126x_read_buf(struct sx126x *dev, void *buffer, size_t *len)
 		dev->cnt_rx255 += 1;
 	}
 
-	dev_info(&(dev->spi->dev), "Rx: %d Bytes @ 0x%02x\n", rx_len, pktstart);
+	//dev_info(&(dev->spi->dev), "Rx: %d Bytes @ 0x%02x\n", rx_len, pktstart);
 
 	if (rx_len >= MIN_PAYLOAD_LEN && rx_len <= MAX_PAYLOAD_LEN) {
 		/* buffer is ok */
@@ -1769,6 +1771,9 @@ static ssize_t sx126x_tx_buf_store(struct device *dev,
 {
 	struct sx126x *data = dev_get_drvdata(dev);
 
+	uint8_t rv = sx126x_get_status(data);
+	int st_i = (rv >> 4) & 0x7;
+
 	char ci[3] = {0};
 
 	uint8_t tx_b;
@@ -1806,9 +1811,15 @@ static ssize_t sx126x_tx_buf_store(struct device *dev,
 	/* save the pkt_len to dev_id */
 	data->tx_buf[3] = i/2;
 
+	if (st_i != SX126X_CMODE_STBY_RC) {
+
+		sx126x_set_standby(data, SX126X_STANDBY_RC);
+	}
+
 	mutex_lock(&data->mutex);
 
 	//sx126x_send(data, data->tx_buf, d_len+6, SX126X_TXMODE_SYNC);
+
 	sx126x_send_tx_buf(data);
 
 	mutex_unlock(&data->mutex);
@@ -2329,6 +2340,11 @@ static irqreturn_t sx126x_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/*
+ * 0x004: IRQ_PREAMBLE_DETECTED, irq consumer: 4.5 ms
+ * 0x002: IRQ_RX_DONE, irq consumer: 45 ms
+ *
+*/
 static void sx126x_irq_handler(struct work_struct *work)
 {
 	struct sx126x *d = container_of(work, struct sx126x, irq_work);
@@ -2336,6 +2352,14 @@ static void sx126x_irq_handler(struct work_struct *work)
 	d->irq_st = sx126x_get_irq_status(d);
 
 	dev_info(&d->spi->dev, "irq_st = 0x%03X\n", (unsigned)d->irq_st);
+
+#ifdef SX126X_SHOW_IRQ_TIME
+	u32 s_ns, e_ns;
+
+	mutex_lock(&d->mutex);
+	s_ns = ktime_get_real_ns();
+	mutex_unlock(&d->mutex);
+#endif
 
 	/* irq: 0x076 or 0x066 are incorrect state */
 
@@ -2410,7 +2434,7 @@ static void sx126x_irq_handler(struct work_struct *work)
 
 			wake_up(&d->readwq);
 
-			print_hex_dump(KERN_DEBUG, " | ", DUMP_PREFIX_NONE, 16, 1, d->irq_buf, d->irq_plen, true);
+			//print_hex_dump(KERN_DEBUG, " | ", DUMP_PREFIX_NONE, 16, 1, d->irq_buf, d->irq_plen, true);
 
 		} else {
 		#ifdef SX126X_DEBUG_IRQ
@@ -2516,6 +2540,12 @@ clr_out:
 	sx126x_clear_irq_status(d, SX126X_IRQ_ALL);
 
 cad_out:
+#ifdef SX126X_SHOW_IRQ_TIME
+	mutex_lock(&d->mutex);
+	e_ns = ktime_get_real_ns();
+	mutex_unlock(&d->mutex);
+	dev_info(d->chardevice, "irq consumer %dns\n", e_ns - s_ns);
+#endif
 	return ;
 }
 
