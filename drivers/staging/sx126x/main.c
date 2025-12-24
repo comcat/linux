@@ -2229,10 +2229,10 @@ static ssize_t sx126x_dev_write(struct file *filp, const char __user * buf,
 				size_t count, loff_t * f_pos)
 {
 	struct sx126x *data = filp->private_data;
-	size_t packetsz, offset, maxpkt = 256;
+	size_t packetsz, offset, maxpkt = MAX_PAYLOAD_LEN;
 	int ret = -1;
 
-	u8 kbuf[256];
+	u8 kbuf[MAX_PAYLOAD_LEN];
 	dev_info(&data->spi->dev, "char device write; %d\n", count);
 
 	for (offset = 0; offset < count; offset += maxpkt) {
@@ -2278,43 +2278,43 @@ static long sx126x_dev_ioctl(struct file *filp, unsigned int cmd,
 			     unsigned long arg)
 {
 	struct sx126x *data = filp->private_data;
+
+	uint8_t buffer[2] = {0};
 	int ret = -1;
+
 	enum sx126x_ioctl_cmd ioctlcmd = cmd;
 
 	mutex_lock(&data->mutex);
 
 	switch (ioctlcmd) {
-		case SX126X_IOCTL_CMD_SETUP_V0:
+		case SX126X_IO_SETUP_V0:
 			ret = sx126x_setup_v0(data, arg);
 			break;
-		case SX126X_IOCTL_CMD_SET_FREQ:
+		case SX126X_IO_SET_FREQ:
 			ret = sx126x_set_freq(data, arg);
 			break;
-		case SX126X_IOCTL_CMD_GET_FREQ:
+		case SX126X_IO_GET_FREQ:
 			ret = data->_tx_freq;
 			break;
-		case SX126X_IOCTL_CMD_SET_SF:
+		case SX126X_IO_SET_SF:
 			ret = sx126x_set_sf(data, arg);
 			break;
-		case SX126X_IOCTL_CMD_GET_SF:
+		case SX126X_IO_GET_SF:
 			ret = data->_sf;
 			break;
-		case SX126X_IOCTL_CMD_SET_BW:
+		case SX126X_IO_SET_BW:
 			ret = sx126x_set_bw(data, arg);
 			break;
-		case SX126X_IOCTL_CMD_SET_CR:
+		case SX126X_IO_SET_CR:
 			ret = sx126x_set_cr(data, arg);
 			break;
-		case SX126X_IOCTL_CMD_SET_SYNCWORD:
+		case SX126X_IO_SET_SYNCWORD:
 			ret = sx126x_set_syncword(data, arg & 0xff);
 			break;
-		case SX126X_IOCTL_CMD_GET_SYNCWORD:
-			ret = 0;
-			break;
-		case SX126X_IOCTL_CMD_SET_CRC:
-			break;
-		case SX126X_IOCTL_CMD_GET_CRC:
-			ret = 0;
+		case SX126X_IO_GET_SYNCWORD:
+			sx126x_read_reg(data, SX126X_REG_LR_SYNCWORD, buffer, 2);
+			//printk("Syncword: 0x%0X 0x%0X\n", buffer[0], buffer[1]);
+			ret = (buffer[0] << 8) | buffer[1];
 			break;
 		default:
 			ret = -EINVAL;
@@ -2337,6 +2337,15 @@ static irqreturn_t sx126x_irq(int irq, void *dev_id)
 {
 	struct sx126x *data = dev_id;
 	schedule_work(&data->irq_work);
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t sx126x_key_irq(int irq, void *dev_id)
+{
+	struct sx126x *d = dev_id;
+
+	dev_info(&d->spi->dev, "TX the cached buffer\n");
+
 	return IRQ_HANDLED;
 }
 
@@ -2554,6 +2563,7 @@ static int sx126x_probe(struct spi_device *spi)
 	int ret = 0;
 	struct sx126x *data;
 	int minor;
+	int irq;
 
 	uint8_t buffer[2] = {0x00};
 
@@ -2691,6 +2701,20 @@ static int sx126x_probe(struct spi_device *spi)
 	if (ret) {
 		dev_err(&spi->dev, "Error request dev irq: %d\n", ret);
 		goto err_irq;
+	}
+
+	// get the irq of key
+    // ret = of_property_read_string_index(node, "interrupt-names", i, &name);
+	irq = irq_of_parse_and_map(spi->dev.of_node, 1);
+	if (!irq) {
+		dev_warn(&spi->dev, "NO key irq in dts\n");
+
+	} else {
+		ret = devm_request_irq(&spi->dev, irq, sx126x_key_irq, 0, "sx126x-key", data);
+		if (ret) {
+			dev_err(&spi->dev, "Error request key irq: %d\n", ret);
+			goto err_irq;
+		}
 	}
 
 	// create the frontend device and stash it in the spi device
