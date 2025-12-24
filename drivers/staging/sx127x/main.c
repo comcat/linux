@@ -243,6 +243,7 @@ static int sx127x_reg_read(struct spi_device *spi, u16 reg, u8 * result)
 	return ret;
 }
 
+#if 0
 static int sx127x_reg_read16(struct spi_device *spi, u16 reg, u16 * result)
 {
 	u8 addr = reg & 0xff;
@@ -251,6 +252,7 @@ static int sx127x_reg_read16(struct spi_device *spi, u16 reg, u16 * result)
 	dev_dbg(&spi->dev, "read: @%02x %02x\n", addr, *result);
 	return ret;
 }
+#endif
 
 static int sx127x_reg_read24(struct spi_device *spi, u16 reg, u32 * result)
 {
@@ -265,7 +267,7 @@ static int sx127x_reg_read24(struct spi_device *spi, u16 reg, u32 * result)
 
 static int sx127x_reg_write(struct spi_device *spi, u16 reg, u8 value)
 {
-	u8 addr = SX127X_REGADDR(reg), buff[2], readback;
+	u8 addr = SX127X_REGADDR(reg), buff[2];// readback;
 	int ret;
 	buff[0] = SX127X_WRITEADDR(addr);
 	buff[1] = value;
@@ -853,7 +855,7 @@ static ssize_t sx127x_bw_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
-	struct sx127x *data = dev_get_drvdata(dev);
+	//struct sx127x *data = dev_get_drvdata(dev);
 	return count;
 }
 
@@ -907,7 +909,7 @@ static ssize_t sx127x_cr_store(struct device *dev,
 				       struct device_attribute *attr,
 				       const char *buf, size_t count)
 {
-	struct sx127x *data = dev_get_drvdata(dev);
+	//struct sx127x *data = dev_get_drvdata(dev);
 	return count;
 }
 
@@ -935,7 +937,7 @@ static ssize_t sx127x_implicitheadermodeon_store(struct device *dev,
 						 struct device_attribute *attr,
 						 const char *buf, size_t count)
 {
-	struct sx127x *data = dev_get_drvdata(dev);
+	//struct sx127x *data = dev_get_drvdata(dev);
 	return count;
 }
 
@@ -978,7 +980,7 @@ static int sx127x_set_paoutput(struct sx127x *data, enum sx127x_pa pa)
 
 	sx127x_reg_write(data->spidevice, SX127X_REG_PACONFIG, paconfig);
 
-	return 0;
+	return ret;
 }
 
 static ssize_t sx127x_paoutput_store(struct device *dev,
@@ -1031,7 +1033,7 @@ static ssize_t sx127x_power_store(struct device *dev,
 					const char *buf, size_t count)
 {
 	struct sx127x *data = dev_get_drvdata(dev);
-	int idx = sx127x_indexofstring(buf, paoutput, ARRAY_SIZE(paoutput));
+	//int idx = sx127x_indexofstring(buf, paoutput, ARRAY_SIZE(paoutput));
 	u8 paconfig;
 
 	sx127x_reg_read(data->spidevice, SX127X_REG_PACONFIG, &paconfig);
@@ -1447,7 +1449,7 @@ static int sx127x_probe(struct spi_device *spi)
 	return ret;
 }
 
-static int sx127x_remove(struct spi_device *spi)
+static void sx127x_remove(struct spi_device *spi)
 {
 	struct sx127x *data = spi_get_drvdata(spi);
 
@@ -1468,8 +1470,6 @@ static int sx127x_remove(struct spi_device *spi)
 
 	kfifo_free(&data->out);
 	kfree(data);
-
-	return 0;
 }
 
 static const struct of_device_id sx127x_of_match[] = {
@@ -1507,7 +1507,7 @@ static int __init sx127x_init(void)
 
 	printk("dev_major = %d\n", devmajor);
 
-	devclass = class_create(THIS_MODULE, SX127X_CLASSNAME);
+	devclass = class_create(SX127X_CLASSNAME);
 
 	if (!devclass) {
 		printk("Failed to register class\n");
